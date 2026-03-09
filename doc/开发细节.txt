@@ -1,0 +1,113 @@
+针对 **Godot 4.x (4.6预览版特性)**，这份文档将从架构设计、核心类实现、信号通信以及 Godot 特有的功能应用（如 `Resources` 和 `Signals`）三个维度进行深度拆解。
+
+---
+
+# Godot 4.6 游戏引擎详细开发文档
+
+## 一、 核心架构设计：基于 Resource 的驱动模式
+
+在卡牌游戏中，数据与逻辑分离至关重要。利用 Godot 的 `Resource` 类来处理卡牌和环境数据。
+
+### 1. 数据定义 (Data Definitions)
+
+* **CardResource (`.tres`):** 存储卡牌名称、纹理、消耗、效果列表、类型（核心/消耗）。
+* **EnvironmentResource (`.tres`):** 存储环境名称、背景材质、全局状态修改器（Modifier）。
+* **StatusEffectResource (`.tres`):** 存储状态图标、持续回合、叠层逻辑、触发的回调函数。
+
+### 2. 场景树结构 (Scene Tree)
+
+```text
+Main (Node)
+├── GlobalManager (Autoload/Singleton) # 全局状态、局外数据
+├── BattleStage (Node2D)               # 战斗主场景
+│   ├── EnvironmentManager             # 处理背景、全局Shader
+│   ├── EntityManager                  # 管理玩家与敌人Node
+│   ├── CardManager                    # 牌组逻辑、发牌、回收
+│   └── UI_Layer (CanvasLayer)         # 战斗HUD
+└── BaseManager (Node)                 # 局外基地管理逻辑
+
+```
+
+---
+
+## 二、 关键功能模块实现细节
+
+### 1. 环境系统与 Shader 交互
+
+* **功能：** 环境卡不仅改变数值，还改变视觉。
+* **实现：**
+* 使用 `WorldEnvironment` 节点控制基础色调。
+* **Shader 全局变量：** 使用 `RenderingServer.global_shader_parameter_set()` 在环境切换时，一键更改全场材质属性（如：雨天的湿滑反光、燥热的空气扭曲）。
+* **环境逻辑：** `EnvironmentManager` 监听 `environment_changed` 信号，遍历场上所有 `Entity` 并应用当前环境的 `StaticBuffs`。
+
+
+
+### 2. 卡牌系统：拖拽与逻辑分离
+
+* **物理表现：** `Card2D` 场景。使用 `Area2D` 检测鼠标悬停与拖拽。利用 `Tween` 实现卡牌展开的扇形排布和抽牌动画。
+* **效果执行：**
+```gdscript
+# Card.gd 中的核心逻辑
+func play_card(target: Entity):
+    for effect in card_resource.effects:
+        effect.execute(self, target) # effect 是自定义的 RefCounted 类
+    if card_resource.is_consumable:
+        destroy_card() # 消耗品逻辑，从 DeckList 中永久移除
+
+```
+
+
+
+### 3. 数值叠层与“机制杀” (Damage Pipeline)
+
+* **计算链：** 创建一个 `DamageCalculator` 静态类。
+```gdscript
+static func calculate(base_dmg, source, target) -> int:
+    var total = base_dmg
+    total += source.get_stat_bonus()  # 加上状态加成
+    total *= EnvironmentManager.get_current_multiplier(source.element) # 乘上环境倍率
+    return total
+
+```
+
+
+* **机制杀检测：** 在 `Entity.take_damage()` 中检测伤害比率。若 `final_damage > target.max_hp * 2`，触发 `emit_signal("on_overkill")`，调用特效系统并生成稀有掉落。
+
+---
+
+## 三、 UI 与 交互系统 (Godot Control Nodes)
+
+### 1. 战斗 HUD (CanvasLayer)
+
+* **意图显示：** 使用 `Sprite2D` 配合 `Label` 悬浮在敌人上方。利用 `Control` 节点的 `anchors` 保证在不同分辨率下的适配。
+* **状态栏：** 使用 `HBoxContainer` 动态加载状态图标小场景。
+
+### 2. 基地系统 (Meta-Progression UI)
+
+* **建筑升级：** 使用 `TextureButton`。利用 Godot 的 **Theme 编辑器** 统一 UI 风格，确保科幻感。
+* **保存系统：** 使用 `FileAccess` 将基地进度序列化为 JSON 或 `ConfigFile`（加密存放在 `user://` 路径）。
+
+---
+
+## 四、 针对 Godot 4.6 的优化建议
+
+### 1. 性能优化 (Optimization)
+
+* **对象池 (Object Pooling)：** 对于战斗中频繁出现的数字飘字（Floating Numbers）和粒子特效，预先实例化并存入 `Array`，避免频繁 `instantiate()` 导致掉帧。
+* **信号总线 (Signal Bus)：** 创建一个 `GameEvents.gd` 单例，所有跨模块通信（如：环境改变、单位死亡）通过它中转，解耦 `BattleStage` 与 `BaseManager`。
+
+### 2. 视觉增强 (Visual Juice)
+
+* **GPU Particles 2D：** 机制杀时的“碎裂效果”使用 GPU 粒子，配合 `Camera2D` 的 `shake` 脚本。
+* **CanvasGroup：** 用于处理卡牌叠加时的遮罩和描光效果，避免子节点透明度重叠问题。
+
+---
+
+## 五、 开发路线图 (Godot Workflow)
+
+1. **Sprint 1 (核心原型):** 实现 `CardResource` 和基础的抽牌、打牌逻辑。
+2. **Sprint 2 (战斗环境):** 实现 `EnvironmentManager` 和基础的属性克制逻辑。
+3. **Sprint 3 (基地系统):** 实现局外资源存储与局内消耗品的“带入”功能。
+4. **Sprint 4 (波效与打磨):** 利用 Shader 增加机制杀的视觉冲击力，完善 UI 动效。
+
+---
