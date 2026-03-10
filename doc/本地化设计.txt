@@ -1,0 +1,480 @@
+# 本地化设计文档
+
+**版本**：1.0  
+**最后更新**：2026-03-10  
+**关联文档**：UI 设计文档.txt、游戏设计.txt  
+**游戏引擎**：Godot 4.6
+
+---
+
+## 一、本地化概述
+
+### 1. 设计目标
+
+支持多语言，让游戏能够面向全球玩家，同时保持文化适配和翻译质量。
+
+**支持语言**：
+| 语言 | 代码 | 优先级 |
+|:---|:---|:---:|
+| 简体中文 | zh_CN | P0 |
+| 繁体中文 | zh_TW | P0 |
+| 英语 | en | P0 |
+| 日语 | ja | P1 |
+| 韩语 | ko | P1 |
+| 德语 | de | P2 |
+| 法语 | fr | P2 |
+| 西班牙语 | es | P2 |
+
+### 2. 本地化范围
+
+| 内容类型 | 是否本地化 | 说明 |
+|:---|:---:|:---|
+| UI 文本 | ✅ | 所有界面文字 |
+| 卡牌描述 | ✅ | 卡牌名称、效果 |
+| 剧情文本 | ✅ | 对话、旁白 |
+| 成就描述 | ✅ | 成就名称、说明 |
+| 教程文本 | ✅ | 引导提示 |
+| 音频 | ❌ | 首版本无配音 |
+| 美术文字 | ⚠️ | 尽量使用可替换贴图 |
+
+---
+
+## 二、文本键位命名规范
+
+### 1. 命名规则
+
+```
+[模块]_[分类]_[具体文本]
+
+示例：
+ui_main_title          # UI-主菜单 - 标题
+ui_main_start          # UI-主菜单 - 开始游戏
+ui_main_options        # UI-主菜单 - 选项
+ui_main_quit           # UI-主菜单 - 退出
+
+card_attack_name       # 卡牌 - 攻击卡 - 名称
+card_attack_desc       # 卡牌 - 攻击卡 - 描述
+
+enemy_boss_001_name    # 敌人-BOSS001- 名称
+```
+
+### 2. 模块分类
+
+| 模块前缀 | 说明 |
+|:---|:---|
+| ui_ | 界面文本 |
+| card_ | 卡牌文本 |
+| enemy_ | 敌人文本 |
+| skill_ | 技能文本 |
+| item_ | 物品文本 |
+| building_ | 建筑文本 |
+| achievement_ | 成就文本 |
+| tutorial_ | 教程文本 |
+| story_ | 剧情文本 |
+| system_ | 系统文本 |
+
+### 3. 完整示例
+
+```
+# UI 文本
+ui_main_title = "原点移动"
+ui_main_start = "开始远征"
+ui_main_continue = "继续"
+ui_main_options = "选项"
+ui_main_quit = "退出游戏"
+
+ui_battle_energy = "能量"
+ui_battle_draw = "抽牌"
+ui_battle_end_turn = "结束回合"
+
+# 卡牌文本
+card_core_thunder_name = "雷霆核心"
+card_core_thunder_desc = "核心卡：电系伤害 +50%"
+
+# 成就文本
+achievement_first_win_name = "首胜"
+achievement_first_win_desc = "赢得第 1 场战斗"
+```
+
+---
+
+## 三、翻译文件结构
+
+### 1. CSV 格式（推荐）
+
+```csv
+key,zh_CN,zh_TW,en,ja,ko,de,fr,es
+ui_main_title，原点移动，原點移動，Mobile Core,モバイルコア,모바일 코어,Mobile Core,Mobile Core,Mobile Core
+ui_main_start，开始远征，開始遠征，Start Expedition,遠征開始,원정 시작,Expedition starten,Commencer l'expédition,Iniciar Expedición
+card_core_thunder_name，雷霆核心，雷霆核心，Thunder Core,サンダーコア,썬더 코어,Donnerkern,Cœur de Foudre,Núcleo de Trueno
+```
+
+### 2. JSON 格式（备选）
+
+```json
+{
+  "zh_CN": {
+    "ui_main_title": "原点移动",
+    "ui_main_start": "开始远征",
+    "card_core_thunder_name": "雷霆核心"
+  },
+  "en": {
+    "ui_main_title": "Mobile Core",
+    "ui_main_start": "Start Expedition",
+    "card_core_thunder_name": "Thunder Core"
+  }
+}
+```
+
+### 3. Godot 翻译文件
+
+```
+# Godot 使用 .csv 或 .translation 文件
+# 文件命名：locale.translation
+
+# zh_CN.translation
+ui_main_title="原点移动"
+ui_main_start="开始远征"
+
+# en.translation
+ui_main_title="Mobile Core"
+ui_main_start="Start Expedition"
+```
+
+---
+
+## 四、Godot 实现方案
+
+### 1. 翻译管理器
+
+```gdscript
+# LocalizationManager.gd - 单例
+class_name LocalizationManager extends Node
+
+signal language_changed(locale: String)
+
+var supported_locales: Array[String] = ["zh_CN", "zh_TW", "en", "ja", "ko"]
+var current_locale: String = "zh_CN"
+
+func _ready():
+    # 自动检测系统语言
+    var system_locale = get_system_locale()
+    if system_locale in supported_locales:
+        set_locale(system_locale)
+    else:
+        set_locale("zh_CN")  # 默认中文
+
+func set_locale(locale: String):
+    if locale not in supported_locales:
+        push_warning("Locale not supported: ", locale)
+        locale = "zh_CN"
+    
+    current_locale = locale
+    TranslationServer.set_locale(locale)
+    language_changed.emit(locale)
+    
+    # 保存设置
+    save_language_preference()
+
+func get_locale() -> String:
+    return current_locale
+
+func tr(text_key: String) -> String:
+    return TranslationServer.translate(text_key)
+
+func get_system_locale() -> String:
+    var locale = OS.get_locale_language()
+    # 映射系统语言到支持的语言
+    var locale_map = {
+        "zh": "zh_CN",
+        "en": "en",
+        "ja": "ja",
+        "ko": "ko",
+        "de": "de",
+        "fr": "fr",
+        "es": "es"
+    }
+    return locale_map.get(locale, "zh_CN")
+```
+
+### 2. UI 文本绑定
+
+```gdscript
+# LocalizedLabel.gd
+class_name LocalizedLabel extends Label
+
+@export var text_key: String
+
+func _ready():
+    LocalizationManager.language_changed.connect(_on_language_changed)
+    update_text()
+
+func _on_language_changed(_locale: String):
+    update_text()
+
+func update_text():
+    if text_key:
+        text = LocalizationManager.tr(text_key)
+```
+
+### 3. 动态文本
+
+```gdscript
+# 带参数的翻译
+func tr_with_params(text_key: String, params: Dictionary) -> String:
+    var template = TranslationServer.translate(text_key)
+    for key in params:
+        template = template.replace("{" + key + "}", str(params[key]))
+    return template
+
+# 使用示例
+# 翻译模板："造成 {damage} 点伤害"
+tr_with_params("card_effect_damage", {"damage": 10})
+# 结果："造成 10 点伤害"
+```
+
+---
+
+## 五、字体回退方案
+
+### 1. 字体配置
+
+```gdscript
+# FontManager.gd
+class_name FontManager extends Node
+
+var font_mapping: Dictionary = {
+    "zh_CN": ["res://assets/fonts/NotoSansSC-Regular.ttf", "res://assets/fonts/NotoSansSC-Bold.ttf"],
+    "zh_TW": ["res://assets/fonts/NotoSansTC-Regular.ttf", "res://assets/fonts/NotoSansTC-Bold.ttf"],
+    "en": ["res://assets/fonts/NotoSans-Regular.ttf", "res://assets/fonts/NotoSans-Bold.ttf"],
+    "ja": ["res://assets/fonts/NotoSansJP-Regular.ttf", "res://assets/fonts/NotoSansJP-Bold.ttf"],
+    "ko": ["res://assets/fonts/NotoSansKR-Regular.ttf", "res://assets/fonts/NotoSansKR-Bold.ttf"]
+}
+
+func get_font_for_locale(locale: String) -> FontFile:
+    var fonts = font_mapping.get(locale, font_mapping["zh_CN"])
+    var font = FontFile.new()
+    font.font_data = load(fonts[0]).font_data
+    return font
+```
+
+### 2. 字体回退链
+
+```
+主字体 → 中文支持 → 日文支持 → 韩文支持 → 系统字体
+
+Godot 4.x 支持字体回退：
+- 主字体：Noto Sans（西文）
+- 回退 1: Noto Sans SC（简体中文）
+- 回退 2: Noto Sans JP（日文）
+- 回退 3: Noto Sans KR（韩文）
+```
+
+### 3. Theme 配置
+
+```gdscript
+# 为不同语言设置不同字体
+func setup_language_theme(locale: String):
+    var theme = Theme.new()
+    var font = FontManager.get_font_for_locale(locale)
+    
+    # 设置默认字体
+    theme.default_font = font
+    
+    # 设置不同大小的字体
+    theme.set_font("Title", "Label", FontManager.get_bold_font(locale))
+    theme.set_font("Body", "Label", font)
+    
+    return theme
+```
+
+---
+
+## 六、文化适配注意事项
+
+### 1. 文本长度
+
+| 语言 | 相对中文长度 | 注意事项 |
+|:---|:---:|:---|
+| 中文 | 1.0x | 基准 |
+| 英语 | 1.5-2.0x | 需要更多空间 |
+| 德语 | 2.0-2.5x | 单词很长 |
+| 日语 | 1.0-1.2x | 假名 + 汉字 |
+| 韩语 | 1.2-1.5x | 音节块 |
+
+**UI 设计建议**：
+- 按钮宽度预留 2 倍空间
+- 使用自动换行
+- 避免固定宽度容器
+
+### 2. 日期格式
+
+```gdscript
+# 使用 Godot 的本地化日期
+func format_date_localized(date: Dictionary) -> String:
+    # Godot 4.x
+    return Time.get_date_string_from_unix_time(Time.get_unix_time_from_datetime_dict(date))
+```
+
+| 地区 | 日期格式 | 示例 |
+|:---|:---|:---|
+| 中国 | YYYY-MM-DD | 2026-03-10 |
+| 美国 | MM/DD/YYYY | 03/10/2026 |
+| 欧洲 | DD.MM.YYYY | 10.03.2026 |
+| 日本 | YYYY 年 MM 月 DD 日 | 2026 年 03 月 10 日 |
+
+### 3. 数字格式
+
+| 地区 | 千位分隔 | 小数点 | 示例 |
+|:---|:---|:---|:---|
+| 中国/美国 | , | . | 1,234.56 |
+| 德国 | . | , | 1.234,56 |
+| 日本 | , | . | 1,234.56 |
+
+### 4. 颜色与文化
+
+| 颜色 | 中国 | 西方 | 日本 |
+|:---|:---|:---|:---|
+| 红色 | 喜庆/好运 | 危险/警告 | 神圣 |
+| 白色 | 丧事 | 纯洁 | 丧事 |
+| 黄色 | 皇室/尊贵 | 警告 | 勇气 |
+
+---
+
+## 七、翻译工作流程
+
+### 1. 文本提取
+
+```bash
+# 使用脚本提取所有翻译键
+python scripts/extract_translations.py
+
+# 输出：translations/template.csv
+```
+
+### 2. 翻译流程
+
+```
+1. 提取文本 → template.csv
+2. 发送给翻译团队/服务
+3. 返回翻译文件
+4. 导入游戏
+5. 测试验证
+```
+
+### 3. 翻译质量检查
+
+| 检查项 | 说明 |
+|:---|:---|
+| 完整性 | 所有键都有翻译 |
+| 一致性 | 术语统一 |
+| 长度 | UI 不溢出 |
+| 语法 | 无明显错误 |
+| 文化 | 无冒犯内容 |
+
+---
+
+## 八、语言设置 UI
+
+### 1. 语言选择界面
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  语言设置                                      [X]          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ○ 简体中文                                                 │
+│  ○ 繁體中文                                                 │
+│  ● English                                                  │
+│  ○ 日本語                                                   │
+│  ○ 한국어                                                   │
+│  ○ Deutsch                                                  │
+│  ○ Français                                                 │
+│  ○ Español                                                  │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│                              [确认]  [取消]                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 2. Godot 实现
+
+```gdscript
+# LanguageSettings.gd
+class_name LanguageSettings extends PanelContainer
+
+@onready var language_list: VBoxContainer = $VBoxContainer/LanguageList
+@onready var confirm_button: Button = $VBoxContainer/ConfirmButton
+
+var selected_locale: String = ""
+
+func _ready():
+    populate_languages()
+    selected_locale = LocalizationManager.get_locale()
+    update_selection()
+
+func populate_languages():
+    var languages = {
+        "zh_CN": "简体中文",
+        "zh_TW": "繁體中文",
+        "en": "English",
+        "ja": "日本語",
+        "ko": "한국어",
+        "de": "Deutsch",
+        "fr": "Français",
+        "es": "Español"
+    }
+    
+    for locale in languages:
+        var button = RadioButton.new()
+        button.text = languages[locale]
+        button.meta = locale
+        button.toggled.connect(_on_language_toggled.bind(locale))
+        language_list.add_child(button)
+
+func _on_language_toggled(toggled: bool, locale: String):
+    if toggled:
+        selected_locale = locale
+
+func on_confirm():
+    LocalizationManager.set_locale(selected_locale)
+    hide()
+```
+
+---
+
+## 九、翻译资源目录
+
+```
+resources/
+└── translations/
+    ├── template.csv          # 翻译模板（所有键）
+    ├── zh_CN.csv             # 简体中文
+    ├── zh_TW.csv             # 繁体中文
+    ├── en.csv                # 英语
+    ├── ja.csv                # 日语
+    ├── ko.csv                # 韩语
+    ├── de.csv                # 德语
+    ├── fr.csv                # 法语
+    └── es.csv                # 西班牙语
+```
+
+---
+
+## 十、本地化测试清单
+
+### 测试项目
+
+| 测试项 | 说明 | 预期结果 |
+|:---|:---|:---|
+| 文本显示 | 所有文本正确显示 | 无乱码 |
+| 字体渲染 | 各语言字体正确 | 无缺失字符 |
+| UI 布局 | 文本不溢出 | 自动换行正常 |
+| 语言切换 | 切换后即时生效 | 无需重启 |
+| 保存设置 | 重启后保持选择 | 设置持久化 |
+| 特殊字符 | 特殊符号正常 | 无显示问题 |
+| 数字格式 | 数字本地化 | 符合地区习惯 |
+
+---
+
+**文档结束**
