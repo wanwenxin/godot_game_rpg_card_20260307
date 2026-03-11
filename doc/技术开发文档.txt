@@ -1,0 +1,1565 @@
+# 技术开发文档
+
+**版本**：1.0  
+**最后更新**：2026-03-11  
+**游戏名称**：原点移动 (Mobile Core)  
+**游戏引擎**：Godot 4.6  
+**目标平台**：PC (Windows/Linux/Mac)、移动端 (Android/iOS)
+
+---
+
+## 第一部分：项目架构
+
+### 一、目录结构
+
+```
+godot_game_rpg_card_20260307/
+├── project.godot              # 项目配置文件
+├── icon.svg                   # 项目图标
+├── README.md                  # 项目说明
+├── doc/                       # 设计文档目录
+│   ├── 游戏设计.txt
+│   ├── 世界观设定.txt
+│   ├── 角色与流派设计.txt
+│   ├── 卡牌流派设计.txt
+│   ├── 敌人 BOSS 设计.txt
+│   ├── 数值设计文档.txt
+│   ├── 远征地图设计.txt
+│   ├── 基地建设设计.txt
+│   ├── 环境系统设计.txt
+│   ├── 开发框架设计.txt
+│   ├── 开发细节.txt
+│   ├── 游戏设定大全.txt (新增)
+│   └── 技术开发文档.txt (新增)
+├── assets/                    # 资源目录
+│   ├── audio/                 # 音频资源
+│   │   ├── music/             # 背景音乐
+│   │   ├── sfx/               # 音效
+│   │   └── voice/             # 语音（可选）
+│   ├── graphics/              # 图形资源
+│   │   ├── characters/        # 角色立绘
+│   │   ├── enemies/           # 敌人图像
+│   │   ├── cards/             # 卡牌图像
+│   │   ├── ui/                # UI 元素
+│   │   ├── backgrounds/       # 背景图
+│   │   └── effects/           # 特效
+│   └── models/                # 3D 模型（如有）
+├── scenes/                    # 场景目录
+│   ├── main/                  # 主场景
+│   │   ├── Main.tscn          # 主场景
+│   │   └── Main.gd            # 主场景脚本
+│   ├── game/                  # 游戏核心场景
+│   │   ├── BattleScene.tscn   # 战斗场景
+│   │   ├── MapScene.tscn      # 远征地图场景
+│   │   ├── BaseScene.tscn     # 基地场景
+│   │   └── ...
+│   ├── ui/                    # UI 场景
+│   │   ├── HUD.tscn           # 游戏内 HUD
+│   │   ├── CardDisplay.tscn   # 卡牌显示
+│   │   ├── CharacterSelect.tscn # 角色选择
+│   │   └── ...
+│   └── components/            # 组件场景
+│       ├── Card.tscn          # 卡牌组件
+│       ├── Enemy.tscn         # 敌人组件
+│       ├── Character.tscn     # 角色组件
+│       └── ...
+├── scripts/                   # 脚本目录
+│   ├── autoload/              # 自动加载单例
+│   │   ├── GameManager.gd     # 游戏管理器
+│   │   ├── BattleManager.gd   # 战斗管理器
+│   │   ├── CardDatabase.gd    # 卡牌数据库
+│   │   ├── ResourceManager.gd # 资源管理器
+│   │   ├── AudioManager.gd    # 音频管理器
+│   │   └── SaveManager.gd     # 存档管理器
+│   ├── game/                  # 游戏逻辑脚本
+│   │   ├── battle/            # 战斗相关
+│   │   ├── map/               # 地图相关
+│   │   ├── base/              # 基地相关
+│   │   └── ...
+│   ├── cards/                 # 卡牌脚本
+│   │   ├── Card.gd            # 卡牌基类
+│   │   ├── effects/           # 卡牌效果
+│   │   └── flows/             # 流派专属逻辑
+│   ├── characters/            # 角色脚本
+│   │   ├── Character.gd       # 角色基类
+│   │   ├── abilities/         # 角色技能
+│   │   └── ...
+│   ├── enemies/               # 敌人脚本
+│   │   ├── Enemy.gd           # 敌人基类
+│   │   ├── ai/                # AI 行为
+│   │   └── ...
+│   └── utils/                 # 工具脚本
+│       ├── Logger.gd          # 日志工具
+│       ├── RandomUtil.gd      # 随机工具
+│       └── ...
+├── resources/                 # 资源配置文件
+│   ├── cards/                 # 卡牌配置
+│   │   ├── common/            # 通用卡牌
+│   │   └── flows/             # 流派卡牌
+│   ├── characters/            # 角色配置
+│   ├── enemies/               # 敌人配置
+│   ├── maps/                  # 地图配置
+│   └── data/                  # 其他数据
+├── translations/              # 多语言翻译
+│   ├── en.csv                 # 英文
+│   ├── zh_CN.csv              # 简体中文
+│   └── ja.csv                 # 日文（可选）
+└── exports/                   # 导出预设
+    ├── windows/
+    ├── android/
+    └── ...
+```
+
+---
+
+## 第二部分：核心系统设计
+
+### 一、游戏管理器 (GameManager)
+
+**职责**：全局游戏状态管理、场景切换、数据传递
+
+```gdscript
+# scripts/autoload/GameManager.gd
+extends Node
+
+signal game_state_changed(old_state: GameState, new_state: GameState)
+signal scene_transition_started()
+signal scene_transition_completed()
+
+enum GameState {
+    BOOT,           # 启动
+    TITLE,          # 标题界面
+    BASE,           # 基地
+    MAP_SELECT,     # 地图选择
+    EXPEDITION,     # 远征中
+    BATTLE,         # 战斗中
+    RESULT,         # 结果界面
+    GAME_OVER       # 游戏结束
+}
+
+var current_state: GameState = GameState.BOOT
+var player_data: PlayerData
+var battle_data: BattleData
+var expedition_data: ExpeditionData
+
+# 游戏设置
+var settings: GameSettings
+
+func _ready():
+    _init_game()
+
+func _init_game():
+    # 初始化游戏
+    settings = GameSettings.new()
+    settings.load()
+    player_data = PlayerData.new()
+    _load_save_data()
+
+func change_state(new_state: GameState):
+    var old_state = current_state
+    current_state = new_state
+    game_state_changed.emit(old_state, new_state)
+    _on_state_changed(old_state, new_state)
+
+func _on_state_changed(old_state: GameState, new_state: GameState):
+    match new_state:
+        GameState.TITLE:
+            _load_title_scene()
+        GameState.BASE:
+            _load_base_scene()
+        GameState.MAP_SELECT:
+            _load_map_select_scene()
+        GameState.BATTLE:
+            _load_battle_scene()
+
+func start_expedition(map_id: String, difficulty: String):
+    expedition_data = ExpeditionData.new()
+    expedition_data.map_id = map_id
+    expedition_data.difficulty = difficulty
+    expedition_data.start()
+    change_state(GameState.EXPEDITION)
+
+func start_battle(enemies: Array, rewards: Dictionary):
+    battle_data = BattleData.new()
+    battle_data.enemies = enemies
+    battle_data.rewards = rewards
+    change_state(GameState.BATTLE)
+
+func _load_title_scene():
+    await get_tree().change_scene_to_file("res://scenes/main/TitleScene.tscn")
+    scene_transition_completed.emit()
+
+func _load_base_scene():
+    await get_tree().change_scene_to_file("res://scenes/game/BaseScene.tscn")
+    scene_transition_completed.emit()
+
+func _load_map_select_scene():
+    await get_tree().change_scene_to_file("res://scenes/game/MapSelectScene.tscn")
+    scene_transition_completed.emit()
+
+func _load_battle_scene():
+    await get_tree().change_scene_to_file("res://scenes/game/BattleScene.tscn")
+    scene_transition_completed.emit()
+```
+
+---
+
+### 二、战斗管理器 (BattleManager)
+
+**职责**：战斗流程控制、回合管理、卡牌使用、敌人 AI
+
+```gdscript
+# scripts/autoload/BattleManager.gd
+extends Node
+
+signal battle_started()
+signal turn_started(turn_number: int)
+signal turn_ended(turn_number: int)
+signal player_energy_changed(current: int, max: int)
+signal card_played(card_data: CardData)
+signal enemy_intent_changed(enemy_id: String, intent: EnemyIntent)
+signal battle_won()
+signal battle_lost()
+
+# 战斗状态
+enum BattleState {
+    WAITING,        # 等待开始
+    PLAYER_TURN,    # 玩家回合
+    ENEMY_TURN,     # 敌人回合
+    RESOLVING,      # 效果结算中
+    VICTORY,        # 胜利
+    DEFEAT          # 失败
+}
+
+var battle_state: BattleState = BattleState.WAITING
+var turn_number: int = 0
+var player_energy: int = 3
+var max_energy: int = 3
+
+# 战斗实体
+var player_deck: Deck
+var player_hand: Hand
+var player_discard: Pile
+var player_draw: Pile
+var enemies: Array[Enemy] = []
+
+# 状态效果
+var player_effects: Dictionary = {}
+var enemy_effects: Dictionary = {}
+
+func _ready():
+    pass
+
+func start_battle(battle_data: BattleData):
+    battle_state = BattleState.WAITING
+    
+    # 初始化战斗实体
+    _init_deck()
+    _init_enemies(battle_data.enemies)
+    _init_effects()
+    
+    # 开始战斗
+    turn_number = 0
+    player_energy = max_energy
+    battle_state = BattleState.PLAYER_TURN
+    
+    # 抽初始手牌
+    player_hand.draw_cards(5)
+    
+    battle_started.emit()
+    start_player_turn()
+
+func _init_deck():
+    player_deck = Deck.new()
+    player_hand = Hand.new()
+    player_discard = Pile.new()
+    player_draw = Pile.new()
+    
+    # 根据角色和流派构建卡组
+    var character = GameManager.player_data.current_character
+    var flow = character.current_flow
+    player_deck.build_from_flow(flow)
+
+func _init_enemies(enemies_data: Array):
+    enemies.clear()
+    for enemy_data in enemies_data:
+        var enemy = Enemy.new()
+        enemy.setup(enemy_data)
+        enemies.append(enemy)
+
+func _init_effects():
+    player_effects.clear()
+    enemy_effects.clear()
+
+# 玩家回合
+func start_player_turn():
+    battle_state = BattleState.PLAYER_TURN
+    turn_number += 1
+    
+    # 重置能量
+    player_energy = max_energy
+    player_energy_changed.emit(player_energy, max_energy)
+    
+    # 重置敌人意图
+    for enemy in enemies:
+        enemy.reset_intent()
+    
+    # 抽牌
+    player_hand.draw_cards(3)
+    
+    # 更新敌人意图显示
+    _update_enemy_intents()
+    
+    turn_started.emit(turn_number)
+
+func _update_enemy_intents():
+    for enemy in enemies:
+        var intent = enemy.get_next_intent()
+        enemy_intent_changed.emit(enemy.id, intent)
+
+func play_card(card: Card):
+    if battle_state != BattleState.PLAYER_TURN:
+        return false
+    
+    if player_energy < card.cost:
+        return false
+    
+    # 消耗能量
+    player_energy -= card.cost
+    player_energy_changed.emit(player_energy, max_energy)
+    
+    # 执行卡牌效果
+    card.execute()
+    
+    # 移动卡牌到弃牌堆
+    player_hand.remove_card(card)
+    player_discard.add_card(card)
+    
+    card_played.emit(card.data)
+    
+    # 检查是否所有敌人死亡
+    if _check_victory():
+        battle_state = BattleState.VICTORY
+        battle_won.emit()
+    
+    return true
+
+func end_player_turn():
+    if battle_state != BattleState.PLAYER_TURN:
+        return
+    
+    battle_state = BattleState.ENEMY_TURN
+    turn_ended.emit(turn_number)
+    
+    # 敌人行动
+    await _execute_enemy_turn()
+    
+    # 检查是否失败
+    if _check_defeat():
+        battle_state = BattleState.DEFEAT
+        battle_lost.emit()
+        return
+    
+    # 开始下回合
+    start_player_turn()
+
+func _execute_enemy_turn():
+    battle_state = BattleState.RESOLVING
+    
+    for enemy in enemies:
+        if enemy.is_alive():
+            await enemy.execute_intent()
+            await get_tree().create_timer(0.5).timeout
+    
+    battle_state = BattleState.PLAYER_TURN
+
+func _check_victory() -> bool:
+    for enemy in enemies:
+        if enemy.is_alive():
+            return false
+    return true
+
+func _check_defeat() -> bool:
+    return GameManager.player_data.current_hp <= 0
+
+# 状态效果管理
+func add_effect(target: String, effect_id: String, stacks: int = 1):
+    var effects_dict = player_effects if target == "player" else enemy_effects
+    if effect_id not in effects_dict:
+        effects_dict[effect_id] = 0
+    effects_dict[effect_id] += stacks
+
+func remove_effect(target: String, effect_id: String, stacks: int = 1):
+    var effects_dict = player_effects if target == "player" else enemy_effects
+    if effect_id in effects_dict:
+        effects_dict[effect_id] -= stacks
+        if effects_dict[effect_id] <= 0:
+            effects_dict.erase(effect_id)
+
+func get_effect_stacks(target: String, effect_id: String) -> int:
+    var effects_dict = player_effects if target == "player" else enemy_effects
+    return effects_dict.get(effect_id, 0)
+```
+
+---
+
+### 三、卡牌数据库 (CardDatabase)
+
+**职责**：卡牌数据加载、查询、缓存
+
+```gdscript
+# scripts/autoload/CardDatabase.gd
+extends Node
+
+var card_data_cache: Dictionary = {}
+var flow_cards: Dictionary = {}  # 按流派分类的卡牌
+
+func _ready():
+    _load_all_cards()
+
+func _load_all_cards():
+    # 加载所有卡牌配置
+    _load_common_cards()
+    _load_flow_cards()
+
+func _load_common_cards():
+    var dir = DirAccess.open("res://resources/cards/common/")
+    if dir:
+        dir.list_dir_begin()
+        var file_name = dir.get_next()
+        while file_name != "":
+            if file_name.ends_with(".tres"):
+                var card_data = load("res://resources/cards/common/" + file_name)
+                card_data_cache[card_data.card_id] = card_data
+            file_name = dir.get_next()
+
+func _load_flow_cards():
+    var flows = ["puppet", "trap", "mechanism", "steam", "machinery", 
+                 "lightning", "holy_light", "guard", "punishment",
+                 "shooting", "nature", "stealth", "element", "life", 
+                 "matter", "sun", "moon", "star", "body", "qi", "blood"]
+    
+    for flow in flows:
+        flow_cards[flow] = []
+        var dir_path = "res://resources/cards/flows/%s/" % flow
+        var dir = DirAccess.open(dir_path)
+        if dir:
+            dir.list_dir_begin()
+            var file_name = dir.get_next()
+            while file_name != "":
+                if file_name.ends_with(".tres"):
+                    var card_data = load(dir_path + file_name)
+                    card_data_cache[card_data.card_id] = card_data
+                    flow_cards[flow].append(card_data.card_id)
+                file_name = dir.get_next()
+
+func get_card_data(card_id: String) -> CardData:
+    if card_id in card_data_cache:
+        return card_data_cache[card_id]
+    return null
+
+func get_cards_by_flow(flow_id: String) -> Array:
+    return flow_cards.get(flow_id, [])
+
+func get_cards_by_type(card_type: CardData.CardType) -> Array:
+    var result = []
+    for card_id in card_data_cache:
+        var data = card_data_cache[card_id]
+        if data.type == card_type:
+            result.append(card_id)
+    return result
+
+func create_card_instance(card_id: String, tier: int = 1) -> Card:
+    var data = get_card_data(card_id)
+    if data:
+        var card = Card.new()
+        card.setup(data, tier)
+        return card
+    return null
+```
+
+---
+
+### 四、卡牌系统 (Card)
+
+**职责**：卡牌数据、效果执行、UI 显示
+
+```gdscript
+# scripts/cards/Card.gd
+extends Node
+class_name Card
+
+signal card_played(card: Card)
+
+var data: CardData
+var tier: int = 1
+var current_cost: int = 0
+var target: Node = null
+
+# 卡牌实例 ID（用于区分同名卡牌）
+var instance_id: String = ""
+
+# 附加词条
+var affixes: Array = []
+
+func setup(card_data: CardData, card_tier: int = 1):
+    data = card_data
+    tier = card_tier
+    current_cost = _calculate_cost()
+
+func _calculate_cost() -> int:
+    # 根据品级计算消耗
+    var base_cost = data.get_cost_for_tier(tier)
+    
+    # 词条修正
+    for affix in affixes:
+        if affix == "cost_down":
+            base_cost -= 1
+        elif affix == "cost_up":
+            base_cost += 1
+    
+    return max(0, base_cost)
+
+func execute():
+    # 执行卡牌效果
+    match data.type:
+        CardData.CardType.ATTACK:
+            _execute_attack()
+        CardData.CardType.SKILL:
+            _execute_skill()
+        CardData.CardType.STATUS:
+            _execute_status()
+        CardData.CardType.CORE:
+            _execute_core()
+    
+    card_played.emit(self)
+
+func _execute_attack():
+    var damage = _calculate_damage()
+    
+    # 应用伤害
+    if target and target is Enemy:
+        target.take_damage(damage, data.element)
+        
+        # 触发额外效果
+        _apply_attack_effects()
+
+func _calculate_damage() -> int:
+    var base_damage = data.get_damage_for_tier(tier)
+    
+    # 状态加成
+    var effect_bonus = BattleManager.calculate_effect_bonus(data.element)
+    
+    # 环境修正
+    var env_bonus = BattleManager.calculate_environment_bonus(data.element)
+    
+    # 暴击计算
+    var crit_rate = GameManager.player_data.get_crit_rate()
+    var crit_mult = GameManager.player_data.get_crit_multiplier()
+    var is_crit = randf() < crit_rate
+    
+    var total_damage = base_damage + effect_bonus + env_bonus
+    if is_crit:
+        total_damage = int(total_damage * crit_mult)
+    
+    return total_damage
+
+func _apply_attack_effects():
+    # 施加状态效果
+    if data.apply_effects:
+        for effect in data.apply_effects:
+            BattleManager.add_effect("enemy", effect.id, effect.stacks)
+
+func _execute_skill():
+    # 执行技能效果
+    match data.effect_id:
+        "draw":
+            player_hand.draw_cards(data.effect_value)
+        "energy":
+            BattleManager.player_energy += data.effect_value
+        "block":
+            GameManager.player_data.add_block(data.effect_value)
+        "heal":
+            GameManager.player_data.heal(data.effect_value)
+
+func _execute_status():
+    # 施加状态
+    if data.target == "self":
+        BattleManager.add_effect("player", data.effect_id, data.effect_stacks)
+    else:
+        for enemy in BattleManager.enemies:
+            BattleManager.add_effect(enemy.id, data.effect_id, data.effect_stacks)
+
+func _execute_core():
+    # 核心卡特殊效果
+    # 由各流派专属逻辑处理
+    pass
+
+func get_display_name() -> String:
+    var name_key = data.name_key
+    if tier > 1:
+        name_key += "_tier%d" % tier
+    return tr(name_key)
+
+func get_display_description() -> String:
+    var desc_key = data.desc_key
+    if tier > 1:
+        desc_key += "_tier%d" % tier
+    return tr(desc_key)
+```
+
+---
+
+### 五、角色系统 (Character)
+
+**职责**：角色数据、属性计算、技能管理
+
+```gdscript
+# scripts/characters/Character.gd
+extends Node
+class_name Character
+
+signal hp_changed(current: int, max: int)
+signal block_changed(amount: int)
+signal energy_changed(current: int, max: int)
+
+var id: String
+var name_key: String
+var desc_key: String
+
+# 基础属性
+var base_max_hp: int = 100
+var base_energy: int = 3
+var base_crit_rate: float = 0.05
+
+# 当前状态
+var current_hp: int = 100
+var max_hp: int = 100
+var current_energy: int = 3
+var max_energy: int = 3
+var block: int = 0
+
+# 流派信息
+var current_flow: String = ""
+var flow_levels: Dictionary = {}  # 流派等级
+
+#  Buff/Debuff
+var buffs: Dictionary = {}
+var debuffs: Dictionary = {}
+
+func setup(character_data: CharacterData):
+    id = character_data.id
+    name_key = character_data.name_key
+    desc_key = character_data.desc_key
+    base_max_hp = character_data.base_hp
+    base_energy = character_data.base_energy
+    base_crit_rate = character_data.base_crit_rate
+    current_flow = character_data.initial_flow
+    
+    max_hp = base_max_hp
+    current_hp = max_hp
+    max_energy = base_energy
+    current_energy = max_energy
+
+func take_damage(amount: int, element: String = "") -> int:
+    # 计算实际伤害（考虑格挡和防御）
+    var actual_damage = _calculate_actual_damage(amount, element)
+    
+    # 扣除格挡
+    if block > 0:
+        var block_damage = min(block, actual_damage)
+        block -= block_damage
+        actual_damage -= block_damage
+        block_changed.emit(block)
+    
+    # 扣除生命
+    current_hp = max(0, current_hp - actual_damage)
+    hp_changed.emit(current_hp, max_hp)
+    
+    # 检查死亡
+    if current_hp <= 0:
+        _on_death()
+    
+    return actual_damage
+
+func _calculate_actual_damage(base_damage: int, element: String) -> int:
+    var damage = base_damage
+    
+    # 元素抗性
+    var resistance = get_element_resistance(element)
+    damage = int(damage * (1 - resistance))
+    
+    # 状态修正
+    damage = BattleManager.calculate_damage_received_modifier(damage)
+    
+    return max(1, damage)
+
+func heal(amount: int) -> int:
+    var old_hp = current_hp
+    current_hp = min(max_hp, current_hp + amount)
+    var healed = current_hp - old_hp
+    hp_changed.emit(current_hp, max_hp)
+    return healed
+
+func add_block(amount: int):
+    block += amount
+    block_changed.emit(block)
+
+func get_crit_rate() -> float:
+    var rate = base_crit_rate
+    
+    # 流派加成
+    rate += _get_flow_crit_bonus()
+    
+    # Buff 加成
+    if "crit_up" in buffs:
+        rate += buffs["crit_up"]
+    
+    return min(1.0, rate)
+
+func get_crit_multiplier() -> float:
+    var mult = 1.5
+    
+    # 词条加成
+    if "deadly" in GameManager.player_data.affixes:
+        mult += 0.5
+    
+    return mult
+
+func _get_flow_crit_bonus() -> float:
+    # 根据当前流派返回暴击加成
+    match current_flow:
+        "shooting":
+            return 0.15  # 游侠基础暴击高
+        "stealth":
+            return 0.10  # 隐匿术潜行加成
+        _:
+            return 0.0
+
+func _on_death():
+    # 死亡处理
+    BattleManager.battle_lost.emit()
+
+# 数据序列化
+func to_dict() -> Dictionary:
+    return {
+        "id": id,
+        "current_hp": current_hp,
+        "max_hp": max_hp,
+        "current_flow": current_flow,
+        "flow_levels": flow_levels
+    }
+
+func from_dict(data_dict: Dictionary):
+    id = data_dict.get("id", id)
+    current_hp = data_dict.get("current_hp", max_hp)
+    max_hp = data_dict.get("max_hp", max_hp)
+    current_flow = data_dict.get("current_flow", current_flow)
+    flow_levels = data_dict.get("flow_levels", flow_levels)
+```
+
+---
+
+## 第三部分：UI 系统
+
+### 一、HUD 布局
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 回合显示                    敌人意图                        │
+│ Turn: 5                   ⚔️ Attack 15                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  敌人区域                                                     │
+│  ┌───────┐  ┌───────┐  ┌───────┐                          │
+│  │ Enemy1│  │Enemy2 │  │Enemy3 │                          │
+│  │ HP:50 │  │HP: 30 │  │HP: 80 │                          │
+│  └───────┘  └───────┘  └───────┘                          │
+│                                                             │
+├─────────────────────────────────────────────────────────────┤
+│ 玩家状态                                                     │
+│ HP: 80/100  ⛨ Block: 15  ⚡ Energy: 2/3                     │
+├─────────────────────────────────────────────────────────────┤
+│ 手牌区域 (横向滚动)                                           │
+│ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐                            │
+│ │卡 1│ │卡 2│ │卡 3│ │卡 4│ │卡 5│ ...                      │
+│ └───┘ └───┘ └───┘ └───┘ └───┘                            │
+├─────────────────────────────────────────────────────────────┤
+│ [结束回合]                                    [打开菜单]      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 二、卡牌 UI 组件
+
+```gdscript
+# scenes/components/Card.tscn 的脚本
+# scripts/ui/CardUI.gd
+extends PanelContainer
+class_name CardUI
+
+@onready var card_name: Label = $MarginContainer/VBoxContainer/CardName
+@onready var card_image: TextureRect = $MarginContainer/VBoxContainer/CardImage
+@onready var card_cost: Label = $CostLabel
+@onready var card_description: Label = $MarginContainer/VBoxContainer/CardDescription
+@onready var tier_indicator: Label = $TierIndicator
+
+var card_data: Card = null
+var is_selectable: bool = true
+var is_hovered: bool = false
+
+func setup(card: Card):
+    card_data = card
+    update_display()
+
+func update_display():
+    if not card_data:
+        return
+    
+    card_name.text = card_data.get_display_name()
+    card_description.text = card_data.get_display_description()
+    card_cost.text = str(card_data.current_cost)
+    
+    # 设置卡牌图片
+    if card_data.data.image_path:
+        card_image.texture = load(card_data.data.image_path)
+    
+    # 设置品级颜色
+    _apply_tier_color()
+    
+    # 设置类型图标
+    _apply_type_icon()
+
+func _apply_tier_color():
+    match card_data.tier:
+        1: modulate = Color.WHITE
+        2: modulate = Color(0.5, 1, 0.5)  # 绿色
+        3: modulate = Color(0.5, 0.5, 1)  # 蓝色
+        4: modulate = Color(0.7, 0.3, 1)  # 紫色
+        5: modulate = Color(1, 0.6, 0.2)  # 橙色
+        6: modulate = Color(1, 0.2, 0.2)  # 红色
+        7: modulate = Color(1, 1, 0.3)    # 金色
+
+func _apply_type_icon():
+    # 根据卡牌类型设置图标
+    pass
+
+func _on_mouse_entered():
+    is_hovered = true
+    # 放大效果
+    var tween = create_tween()
+    tween.tween_property(self, "scale", Vector2(1.2, 1.2), 0.15)
+    
+    # 显示详细信息
+    CardDetailPanel.show_card_detail(card_data)
+
+func _on_mouse_exited():
+    is_hovered = false
+    # 恢复原状
+    var tween = create_tween()
+    tween.tween_property(self, "scale", Vector2(1, 1), 0.15)
+    
+    CardDetailPanel.hide_detail()
+
+func _on_gui_input(event):
+    if event is InputEventMouseButton and event.pressed:
+        if event.button_index == MOUSE_BUTTON_LEFT:
+            if is_selectable:
+                _on_card_clicked()
+
+func _on_card_clicked():
+    # 尝试使用卡牌
+    if BattleManager.battle_state == BattleManager.BattleState.PLAYER_TURN:
+        var success = BattleManager.play_card(card_data)
+        if success:
+            # 播放使用动画
+            _play_use_animation()
+        else:
+            # 无法使用（能量不足）
+            _play_cannot_play_animation()
+
+func _play_use_animation():
+    var tween = create_tween()
+    tween.tween_property(self, "position", get_global_mouse_position(), 0.2)
+    tween.tween_callback(queue_free)
+
+func _play_cannot_play_animation():
+    var tween = create_tween()
+    tween.tween_property(self, "position:x", position.x - 10, 0.1)
+    tween.tween_property(self, "position:x", position.x + 10, 0.1)
+    tween.tween_property(self, "position:x", position.x, 0.1)
+```
+
+---
+
+## 第四部分：数据存储
+
+### 一、存档系统
+
+```gdscript
+# scripts/autoload/SaveManager.gd
+extends Node
+
+const SAVE_PATH = "user://saves/"
+const SAVE_FILE_PREFIX = "save_"
+
+signal save_created(slot: int)
+signal save_loaded(slot: int)
+signal save_deleted(slot: int)
+
+# 存档槽位数量
+const MAX_SAVE_SLOTS = 3
+
+func _ready():
+    _ensure_save_directory()
+
+func _ensure_save_directory():
+    if not DirAccess.dir_exists_absolute(SAVE_PATH):
+        DirAccess.make_dir_recursive_absolute(SAVE_PATH)
+
+func save_game(slot: int, player_data: PlayerData, progress_data: ProgressData) -> bool:
+    var save_data = {
+        "version": 1,
+        "timestamp": Time.get_unix_time_from_system(),
+        "player": player_data.to_dict(),
+        "progress": progress_data.to_dict()
+    }
+    
+    var file_path = SAVE_PATH + SAVE_FILE_PREFIX + str(slot) + ".save"
+    var file = FileAccess.open(file_path, FileAccess.WRITE)
+    
+    if file:
+        file.store_var(save_data)
+        file.close()
+        save_created.emit(slot)
+        return true
+    
+    return false
+
+func load_game(slot: int) -> Dictionary:
+    var file_path = SAVE_PATH + SAVE_FILE_PREFIX + str(slot) + ".save"
+    
+    if not FileAccess.file_exists(file_path):
+        return {}
+    
+    var file = FileAccess.open(file_path, FileAccess.READ)
+    if file:
+        var save_data = file.get_var()
+        file.close()
+        save_loaded.emit(slot)
+        return save_data
+    
+    return {}
+
+func delete_save(slot: int) -> bool:
+    var file_path = SAVE_PATH + SAVE_FILE_PREFIX + str(slot) + ".save"
+    
+    if FileAccess.file_exists(file_path):
+        DirAccess.remove_absolute(file_path)
+        save_deleted.emit(slot)
+        return true
+    
+    return false
+
+func has_save(slot: int) -> bool:
+    var file_path = SAVE_PATH + SAVE_FILE_PREFIX + str(slot) + ".save"
+    return FileAccess.file_exists(file_path)
+
+func get_save_info(slot: int) -> Dictionary:
+    var save_data = load_game(slot)
+    if save_data.is_empty():
+        return {}
+    
+    return {
+        "timestamp": save_data.get("timestamp", 0),
+        "play_time": save_data.get("progress", {}).get("play_time", 0),
+        "character": save_data.get("player", {}).get("character_id", ""),
+        "expedition_count": save_data.get("progress", {}).get("expedition_count", 0)
+    }
+```
+
+---
+
+### 二、玩家数据结构
+
+```gdscript
+# scripts/game/PlayerData.gd
+extends RefCounted
+class_name PlayerData
+
+var player_id: String = ""
+var character_id: String = "lin_waner"  # 初始角色
+var character_data: Character
+
+# 资源
+var stardust: int = 0      # 星尘
+var star_core: int = 0     # 星核
+var gold: int = 0          # 金币
+
+# 解锁内容
+var unlocked_characters: Array[String] = ["lin_waner"]
+var unlocked_cards: Dictionary = {}  # card_id -> unlock_count
+var unlocked_flows: Dictionary = {}  # flow_id -> level
+
+# 收藏
+var collected_cards: Array[CardInstance] = []
+var collected_affixes: Array[String] = []
+
+# 成就
+var achievements: Dictionary = {}  # achievement_id -> completed
+
+# 统计
+var stats: PlayerStats = PlayerStats.new()
+
+# 当前远征数据
+var current_expedition: ExpeditionData = null
+
+func _init():
+    player_id = _generate_player_id()
+
+func _generate_player_id() -> String:
+    return str(int(Time.get_unix_time_from_system()))
+
+func to_dict() -> Dictionary:
+    return {
+        "player_id": player_id,
+        "character_id": character_id,
+        "character": character_data.to_dict() if character_data else {},
+        "resources": {
+            "stardust": stardust,
+            "star_core": star_core,
+            "gold": gold
+        },
+        "unlocks": {
+            "characters": unlocked_characters,
+            "cards": unlocked_cards,
+            "flows": unlocked_flows
+        },
+        "collection": {
+            "cards": _cards_to_dict(collected_cards),
+            "affixes": collected_affixes
+        },
+        "achievements": achievements,
+        "stats": stats.to_dict()
+    }
+
+func from_dict(data: Dictionary):
+    player_id = data.get("player_id", player_id)
+    character_id = data.get("character_id", character_id)
+    
+    var resources = data.get("resources", {})
+    stardust = resources.get("stardust", 0)
+    star_core = resources.get("star_core", 0)
+    gold = resources.get("gold", 0)
+    
+    var unlocks = data.get("unlocks", {})
+    unlocked_characters = unlocks.get("characters", unlocked_characters)
+    unlocked_cards = unlocks.get("cards", unlocked_cards)
+    unlocked_flows = unlocks.get("flows", unlocked_flows)
+    
+    var collection = data.get("collection", {})
+    collected_cards = _dict_to_cards(collection.get("cards", []))
+    collected_affixes = collection.get("affixes", collected_affixes)
+    
+    achievements = data.get("achievements", achievements)
+    stats.from_dict(data.get("stats", {}))
+
+func _cards_to_dict(cards: Array[CardInstance]) -> Array:
+    var result = []
+    for card in cards:
+        result.append(card.to_dict())
+    return result
+
+func _dict_to_cards(data: Array) -> Array[CardInstance]:
+    var result = []
+    for item in data:
+        var card = CardInstance.new()
+        card.from_dict(item)
+        result.append(card)
+    return result
+
+# 资源操作
+func add_stardust(amount: int):
+    stardust += amount
+
+func add_star_core(amount: int):
+    star_core += amount
+
+func add_gold(amount: int):
+    gold += amount
+
+func spend_stardust(amount: int) -> bool:
+    if stardust >= amount:
+        stardust -= amount
+        return true
+    return false
+
+func spend_star_core(amount: int) -> bool:
+    if star_core >= amount:
+        star_core -= amount
+        return true
+    return false
+
+func spend_gold(amount: int) -> bool:
+    if gold >= amount:
+        gold -= amount
+        return true
+    return false
+
+# 解锁检查
+func is_character_unlocked(char_id: String) -> bool:
+    return char_id in unlocked_characters
+
+func is_card_unlocked(card_id: String) -> bool:
+    return unlocked_cards.get(card_id, 0) >= 1
+
+func get_card_unlock_count(card_id: String) -> int:
+    return unlocked_cards.get(card_id, 0)
+
+func unlock_card(card_id: String):
+    if card_id not in unlocked_cards:
+        unlocked_cards[card_id] = 0
+    unlocked_cards[card_id] += 1
+```
+
+---
+
+## 第五部分：配置数据格式
+
+### 一、卡牌配置 (Resource)
+
+```gdscript
+# resources/cards/CardData.gd
+extends Resource
+class_name CardData
+
+enum CardType {
+    ATTACK,
+    SKILL,
+    STATUS,
+    CORE
+}
+
+enum Element {
+    NONE,
+    FIRE,
+    WATER,
+    WIND,
+    EARTH,
+    LIGHTNING,
+    ICE,
+    HOLY,
+    DARK,
+    POISON
+}
+
+@export var card_id: String
+@export var name_key: String
+@export var desc_key: String
+@export var type: CardType
+@export var element: Element
+@export var flow_id: String  # 所属流派
+
+# 品级数据
+@export var tier_data: Array[TierData]  # 7 个品级的数据
+
+# 词条
+@export var compatible_affixes: Array[String]
+
+func get_cost_for_tier(tier: int) -> int:
+    if tier >= 1 and tier <= tier_data.size():
+        return tier_data[tier - 1].cost
+    return 0
+
+func get_damage_for_tier(tier: int) -> int:
+    if tier >= 1 and tier <= tier_data.size():
+        return tier_data[tier - 1].damage
+    return 0
+
+func get_effect_for_tier(tier: int) -> Variant:
+    if tier >= 1 and tier <= tier_data.size():
+        return tier_data[tier - 1].effect
+    return null
+
+# 内嵌资源
+@resource_class("TierData")
+extends Resource
+class_name TierData
+
+@export var tier: int
+@export var cost: int
+@export var damage: int = 0
+@export var effect: Variant
+@export var effect_value: int = 0
+@export var effect_stacks: int = 0
+```
+
+---
+
+### 二、角色配置
+
+```gdscript
+# resources/characters/CharacterData.gd
+extends Resource
+class_name CharacterData
+
+@export var id: String
+@export var name_key: String
+@export var desc_key: String
+@export var base_hp: int = 100
+@export var base_energy: int = 3
+@export var base_crit_rate: float = 0.05
+@export var initial_flow: String
+@export var unlock_condition: UnlockCondition
+@export var portrait_path: String
+@export var splash_path: String
+
+@resource_class("UnlockCondition")
+extends Resource
+class_name UnlockCondition
+
+@export var type: String  # "clear_count", "resource", "achievement"
+@export var requirement: int
+@export var resource_type: String  # "stardust", "star_core"
+```
+
+---
+
+### 三、敌人配置
+
+```gdscript
+# resources/enemies/EnemyData.gd
+extends Resource
+class_name EnemyData
+
+@export var enemy_id: String
+@export var name_key: String
+@export var base_hp: int
+@export var base_attack: int
+@export var base_defense: int
+@export var behavior_pattern: String  # "simple", "normal", "complex"
+@export var action_list: Array[EnemyAction]
+@export var drops: Array[DropItem]
+@export var sprite_path: String
+
+@resource_class("EnemyAction")
+extends Resource
+class_name EnemyAction
+
+@export var action_name: String
+@export var action_type: String  # "attack", "defend", "buff", "special"
+@export var min_turn: int
+@export var max_turn: int
+@export var weight: int
+@export var damage: int = 0
+@export var block: int = 0
+@export var apply_effects: Array[EffectApply]
+
+@resource_class("EffectApply")
+extends Resource
+class_name EffectApply
+
+@export var effect_id: String
+@export var stacks: int
+@export var target: String  # "self", "enemy"
+
+@resource_class("DropItem")
+extends Resource
+class_name DropItem
+
+@export var item_type: String  # "stardust", "star_core", "card", "consumable"
+@export var item_id: String
+@export var min_amount: int
+@export var max_amount: int
+@export var drop_rate: float
+```
+
+---
+
+## 第六部分：多语言系统
+
+### 一、翻译文件结构
+
+```csv
+# translations/zh_CN.csv
+keys,zh_CN
+character.lin_waner.name，林婉儿
+character.lin_waner.desc，墨家最后传人，机关术大师
+character.avira.name，艾薇拉·钢羽
+character.avira.desc，蒸汽工匠公会最年轻的技师
+flow.puppet.name，傀儡术
+flow.puppet.desc，召唤傀儡协同作战
+card.strike.name，打击
+card.strike.desc，造成 {damage} 点伤害
+```
+
+```csv
+# translations/en.csv
+keys,en
+character.lin_waner.name,Lin Wan'er
+character.lin_waner.desc,Last successor of Mohism, master of mechanism
+character.avira.name,Avira Steelwing
+character.avira.desc,Youngest technician of Steam工匠 Guild
+flow.puppet.name,Puppetry
+flow.puppet.desc,Summon puppets to fight together
+card.strike.name,Strike
+card.strike.desc,Deal {damage} damage
+```
+
+---
+
+### 二、本地化管理器
+
+```gdscript
+# scripts/autoload/LocalizationManager.gd
+extends Node
+
+signal language_changed(locale: String)
+
+var supported_locales: Array[String] = ["zh_CN", "en", "ja"]
+var current_locale: String = "zh_CN"
+
+var fallback_locale: String = "zh_CN"
+var translations: Dictionary = {}
+
+func _ready():
+    _load_translations()
+    _detect_system_language()
+
+func _load_translations():
+    for locale in supported_locales:
+        var file_path = "res://translations/%s.csv" % locale
+        translations[locale] = _load_csv(file_path)
+
+func _load_csv(file_path: String) -> Dictionary:
+    var result = {}
+    var file = FileAccess.open(file_path, FileAccess.READ)
+    if file:
+        # 跳过标题行
+        file.get_line()
+        
+        while not file.eof_reached():
+            var line = file.get_line()
+            var parts = line.split(",", false, 1)
+            if parts.size() == 2:
+                result[parts[0]] = parts[1]
+        
+        file.close()
+    
+    return result
+
+func _detect_system_language():
+    var locale = OS.get_locale_language()
+    if locale in supported_locales:
+        set_language(locale)
+
+func set_language(locale: String):
+    if locale in supported_locales:
+        current_locale = locale
+        TranslationServer.set_locale(locale)
+        language_changed.emit(locale)
+
+func tr(key: String, args: Dictionary = {}) -> String:
+    var text = TranslationServer.translate(key)
+    
+    # 如果翻译失败，返回键名
+    if text == key:
+        text = translations.get(current_locale, {}).get(key, key)
+    
+    # 替换参数
+    for arg_key in args:
+        text = text.replace("{" + arg_key + "}", str(args[arg_key]))
+    
+    return text
+
+func get_character_name(char_id: String) -> String:
+    return tr("character.%s.name" % char_id)
+
+func get_character_desc(char_id: String) -> String:
+    return tr("character.%s.desc" % char_id)
+
+func get_flow_name(flow_id: String) -> String:
+    return tr("flow.%s.name" % flow_id)
+
+func get_flow_desc(flow_id: String) -> String:
+    return tr("flow.%s.desc" % flow_id)
+
+func get_card_name(card_id: String) -> String:
+    return tr("card.%s.name" % card_id)
+
+func get_card_desc(card_id: String) -> String:
+    return tr("card.%s.desc" % card_id)
+```
+
+---
+
+## 第七部分：技术要点
+
+### 一、性能优化
+
+#### 1. 对象池
+
+```gdscript
+# scripts/utils/ObjectPool.gd
+extends Node
+class_name ObjectPool
+
+var pool: Array[Node] = []
+var scene: PackedScene
+
+func _init(scene_to_pool: PackedScene, initial_size: int = 10):
+    scene = scene_to_pool
+    for i in range(initial_size):
+        var instance = scene.instantiate()
+        instance.set_process(false)
+        instance.visible = false
+        add_child(instance)
+        pool.append(instance)
+
+func get() -> Node:
+    for instance in pool:
+        if not instance.is_processing():
+            instance.set_process(true)
+            instance.visible = true
+            return instance
+    
+    # 池为空，创建新实例
+    var instance = scene.instantiate()
+    add_child(instance)
+    pool.append(instance)
+    return instance
+
+func return_to_pool(instance: Node):
+    instance.set_process(false)
+    instance.visible = false
+
+func clear():
+    for instance in pool:
+        instance.queue_free()
+    pool.clear()
+```
+
+#### 2. 卡牌渲染优化
+
+```gdscript
+# 使用 CanvasLayer 和 Sorting
+# 手牌只渲染可见部分
+# 使用纹理图集减少 draw call
+```
+
+---
+
+### 二、随机性控制
+
+```gdscript
+# scripts/utils/RandomUtil.gd
+extends Node
+
+# 伪随机分布 (PRD)
+var crit_prd_counter: float = 0.0
+
+func get_pseudo_random(actual_probability: float) -> bool:
+    crit_prd_counter += actual_probability
+    if randf() < crit_prd_counter:
+        crit_prd_counter = 0.0
+        return true
+    return false
+
+# 发牌器控制
+var core_card_draw_tracker: int = 0
+
+func should_draw_core_card(core_card_in_deck: int) -> bool:
+    core_card_draw_tracker += 1
+    # 连续 3 回合未抽到核心卡，强制抽到
+    if core_card_draw_tracker >= 3:
+        core_card_draw_tracker = 0
+        return true
+    return randf() < 0.3  # 正常概率
+```
+
+---
+
+### 三、存档兼容性
+
+```gdscript
+# 版本号用于存档迁移
+const GAME_VERSION: int = 1
+
+func migrate_save_data(old_data: Dictionary, old_version: int) -> Dictionary:
+    var new_data = old_data.duplicate(true)
+    
+    if old_version < 1:
+        # 版本 1 迁移逻辑
+        pass
+    
+    new_data["version"] = GAME_VERSION
+    return new_data
+```
+
+---
+
+## 第八部分：开发规范
+
+### 一、命名规范
+
+| 类型 | 规范 | 示例 |
+|:---|:---|:---|
+| 场景文件 | PascalCase + .tscn | BattleScene.tscn |
+| 脚本文件 | PascalCase + .gd | BattleManager.gd |
+| 变量 | snake_case | player_energy |
+| 常量 | SCREAMING_SNAKE_CASE | MAX_HAND_SIZE |
+| 函数 | snake_case | calculate_damage() |
+| 类 | PascalCase | CardData |
+| 信号 | snake_case | battle_started |
+
+### 二、注释规范
+
+```gdscript
+# 单行注释使用 #
+
+"""
+多行注释使用三引号
+用于函数说明和复杂逻辑解释
+"""
+
+# 函数应有文档字符串
+func calculate_damage(base: int, modifier: float) -> int:
+    """
+    计算最终伤害值
+    
+    参数:
+        base: 基础伤害
+        modifier: 伤害修正系数
+    
+    返回:
+        最终伤害值（至少为 1）
+    """
+    return max(1, int(base * modifier))
+```
+
+### 三、Git 工作流
+
+```bash
+# 分支命名
+main          # 主分支
+develop       # 开发分支
+feature/xxx   # 功能分支
+bugfix/xxx    # 修复分支
+release/x.x   # 发布分支
+
+# 提交信息格式
+feat: 添加新功能
+fix: 修复 bug
+docs: 文档更新
+style: 代码格式
+refactor: 重构
+test: 测试
+chore: 构建/工具
+```
+
+---
+
+**文档版本**：1.0  
+**最后更新**：2026-03-11  
+**游戏引擎**：Godot 4.6
