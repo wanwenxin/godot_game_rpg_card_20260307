@@ -1,0 +1,2460 @@
+# 场景互动流程详解
+
+**版本**：1.1  
+**最后更新**：2026-03-12  
+**游戏名称**：原点移动 (Mobile Core)  
+**游戏引擎**：Godot 4.6  
+**关联文档**：游戏设定大全.txt、技术开发文档.txt、环境系统设计.txt
+
+---
+
+## 目录
+
+1. [场景互动总览](#第一部分场景互动总览)
+2. [基地场景](#第二部分基地场景 base-scene)
+3. [远征地图场景](#第三部分远征地图场景 map-scene)
+4. [战斗场景](#第四部分战斗场景 battle-scene)
+5. [结果界面](#第五部分结果界面 result-scene)
+6. [远征结束流程](#第六部分远征结束流程)
+7. [技术实现参考](#第七部分技术实现参考)
+
+---
+
+# 第一部分：场景互动总览
+
+## 一、游戏状态机
+
+### 1.1 状态定义
+
+游戏使用状态机管理场景切换，确保游戏流程的有序进行。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        游戏状态机                                │
+└─────────────────────────────────────────────────────────────────┘
+
+    ┌──────────┐
+    │   BOOT   │  游戏启动初始化
+    └─────┬────┘
+          │
+          ▼
+    ┌──────────┐
+    │  TITLE   │  标题界面，主菜单
+    └─────┬────┘
+          │
+          ▼
+    ┌──────────┐
+    │   BASE   │  基地场景，准备阶段
+    └─────┬────┘
+          │
+          ▼
+    ┌──────────┐
+    │MAP_SELECT│  地图选择界面
+    └─────┬────┘
+          │
+          ▼
+    ┌──────────┐
+    │EXPEDITION│  远征地图场景
+    └─────┬────┘
+          │
+     ┌────┴────┐
+     │         │
+     ▼         ▼
+┌─────────┐ ┌─────────┐
+│ BATTLE  │ │ RESULT  │
+└────┬────┘ └────┬────┘
+     │           │
+     └─────┬─────┘
+           │
+           ▼
+    ┌──────────┐
+    │GAME_OVER │  游戏结束/通关
+    └──────────┘
+```
+
+### 1.2 状态切换触发条件
+
+| 当前状态 | 目标状态 | 触发条件 | 数据传递 |
+|:---|:---|:---|:---|
+| BOOT | TITLE | 初始化完成 | 无 |
+| TITLE | BASE | 点击继续游戏/新游戏 | 加载存档或创建新存档 |
+| BASE | MAP_SELECT | 点击指挥中心 | 传递玩家当前资源 |
+| MAP_SELECT | EXPEDITION | 确认地图和难度 | 传递 map_id, difficulty |
+| EXPEDITION | BATTLE | 进入战斗节点 | 传递 enemy_config, environment |
+| BATTLE | RESULT | 战斗结束（胜/负） | 传递 battle_result, rewards |
+| RESULT | EXPEDITION | 继续远征 | 更新远征进度 |
+| RESULT | BASE | 返回基地 | 保存远征进度，发放奖励 |
+| EXPEDITION | GAME_OVER | 玩家 HP≤0 或通关 | 传递 final_result |
+
+---
+
+## 二、核心数据流
+
+### 2.1 全局管理器
+
+游戏使用三个单例管理器进行全局数据管理：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        全局管理器                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  GameManager (游戏管理器)                                        │
+│  ├── 游戏状态管理                                                │
+│  ├── 场景切换控制                                                │
+│  └── 全局数据传递                                                │
+│                                                                 │
+│  BattleManager (战斗管理器)                                      │
+│  ├── 战斗流程控制                                                │
+│  ├── 回合管理                                                    │
+│  └── 卡牌效果结算                                                │
+│                                                                 │
+│  SaveManager (存档管理器)                                        │
+│  ├── 存档读写                                                    │
+│  ├── 数据序列化                                                  │
+│  └── 存档迁移                                                    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 核心数据结构
+
+#### PlayerData（玩家数据）
+
+```gdscript
+class_name PlayerData extends RefCounted
+
+# 基础信息
+var player_id: String          # 玩家唯一 ID
+var character_id: String       # 当前角色 ID
+var character_data: Character  # 角色实例
+
+# 资源
+var stardust: int              # 星尘
+var star_core: int             # 星核
+var gold: int                  # 金币
+
+# 解锁内容
+var unlocked_characters: Array[String]  # 已解锁角色
+var unlocked_cards: Dictionary          # 已解锁卡牌 {card_id: count}
+var unlocked_flows: Dictionary          # 流派等级 {flow_id: level}
+
+# 收藏
+var collected_cards: Array[CardInstance]  # 收藏卡牌
+var collected_affixes: Array[String]      # 已解锁词条
+
+# 成就
+var achievements: Dictionary  # {achievement_id: completed}
+
+# 统计
+var stats: PlayerStats  # 游戏统计数据
+
+# 当前远征
+var current_expedition: ExpeditionData
+```
+
+#### ExpeditionData（远征数据）
+
+```gdscript
+class_name ExpeditionData extends RefCounted
+
+var map_id: String           # 地图 ID
+var difficulty: String       # 难度等级
+var current_node_id: String  # 当前节点 ID
+var visited_nodes: Array[String]  # 已访问节点
+var battle_wins: int         # 胜利次数
+var battle_losses: int       # 失败次数
+var rewards: Dictionary      # 已获得奖励
+var map_progress: float      # 地图进度 0-100%
+```
+
+#### BattleData（战斗数据）
+
+```gdscript
+class_name BattleData extends RefCounted
+
+var enemies: Array[EnemyData]    # 敌人列表
+var environment: EnvironmentData # 当前环境
+var player_deck: Deck            # 玩家卡组
+var player_hand: Hand            # 手牌
+var player_discard: Pile         # 弃牌堆
+var turn_number: int             # 当前回合
+var battle_result: BattleResult  # 战斗结果
+```
+
+---
+
+## 三、信号系统
+
+### 3.1 全局信号总线
+
+```gdscript
+# GameEvents.gd - 全局信号单例
+extends Node
+
+# 游戏状态信号
+signal game_state_changed(old_state, new_state)
+signal scene_loaded(scene_name)
+
+# 玩家数据信号
+signal player_resources_changed(stardust, star_core, gold)
+signal player_hp_changed(current, max)
+signal character_unlocked(character_id)
+
+# 战斗信号
+signal battle_started(enemies, environment)
+signal turn_started(turn_number)
+signal turn_ended(turn_number)
+signal card_played(card_data)
+signal enemy_action_taken(enemy_id, action)
+signal battle_won(rewards)
+signal battle_lost(penalty)
+
+# 成就信号
+signal achievement_unlocked(achievement_id)
+signal achievement_progress(achievement_id, current, target)
+
+# UI 信号
+signal ui_show_popup(title, description)
+signal ui_show_reward(reward_data)
+signal ui_transition_started()
+signal ui_transition_completed()
+```
+
+### 3.2 信号连接示例
+
+```gdscript
+# 在 GameManager 中连接信号
+func _ready():
+    BattleManager.battle_won.connect(_on_battle_won)
+    BattleManager.battle_lost.connect(_on_battle_lost)
+    AchievementManager.achievement_unlocked.connect(_on_achievement_unlocked)
+
+func _on_battle_won(rewards: Dictionary):
+    # 发放奖励
+    player_data.stardust += rewards.get("stardust", 0)
+    player_data.star_core += rewards.get("star_core", 0)
+    
+    # 通知 UI
+    GameEvents.ui_show_reward.emit(rewards)
+    
+    # 检查成就
+    AchievementManager.check_achievements("battle_win", {})
+
+func _on_battle_lost(penalty: Dictionary):
+    # 扣除生命
+    var hp_loss = penalty.get("hp_loss", 10)
+    player_data.character_data.current_hp -= hp_loss
+    
+    # 检查游戏结束
+    if player_data.character_data.current_hp <= 0:
+        change_state(GameState.GAME_OVER)
+```
+
+---
+
+# 第二部分：基地场景（Base Scene）
+
+## 一、场景布局
+
+### 1.1 基地主界面
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        基地主界面                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                    基地剖面背景                          │   │
+│  │                                                         │   │
+│  │   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐  │   │
+│  │   │锻造工坊 │  │药剂师  │  │战争学院 │  │募兵所  │  │   │
+│  │   │  Lv.3  │  │协会    │  │  Lv.2  │  │  Lv.4  │  │   │
+│  │   │  [升级] │  │  [升级] │  │  [升级] │  │  [升级] │  │   │
+│  │   └─────────┘  └─────────┘  └─────────┘  └─────────┘  │   │
+│  │                                                         │   │
+│  │              ┌─────────┐                               │   │
+│  │              │精炼工厂 │                               │   │
+│  │              │  Lv.2  │                               │   │
+│  │              │  [升级] │                               │   │
+│  │              └─────────┘                               │   │
+│  │                                                         │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ 资源栏：⭐星尘 2,450  💎星核 85  📊卡组 15/30  ❤️HP 100/100    │
+├─────────────────────────────────────────────────────────────────┤
+│ 功能按钮：[开始远征] [调整卡组] [查看收藏] [成就] [设置] [退出]  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 场景节点结构
+
+```
+BaseScene (Node2D)
+├── Background (Sprite2D)           # 基地背景
+├── BuildingContainer (Control)     # 建筑容器
+│   ├── ForgeWorkshop (Panel)       # 锻造工坊
+│   ├── AlchemistGuild (Panel)      # 药剂师协会
+│   ├── WarAcademy (Panel)          # 战争学院
+│   ├── RecruitmentOffice (Panel)   # 募兵所
+│   └── RefineryPlant (Panel)       # 精炼工厂
+├── ResourceBar (HBoxContainer)     # 资源显示栏
+│   ├── StardustLabel (Label)
+│   ├── StarCoreLabel (Label)
+│   ├── DeckCountLabel (Label)
+│   └── HPLabel (Label)
+├── ActionButtons (HBoxContainer)   # 功能按钮
+│   ├── StartExpeditionButton (Button)
+│   ├── EditDeckButton (Button)
+│   ├── CollectionButton (Button)
+│   ├── AchievementButton (Button)
+│   ├── SettingsButton (Button)
+│   └── ExitButton (Button)
+└── BuildingPopup (Window)          # 建筑详情弹窗（隐藏）
+```
+
+---
+
+## 二、五大建筑互动详解
+
+### 2.1 锻造工坊（Forge Workshop）
+
+**功能**：减少远征前卡牌合成的消耗，每级 3%
+
+#### 互动流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    锻造工坊界面                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  当前等级：Lv.3 → Lv.4                                          │
+│  当前效果：合卡消耗 -9% → 合卡消耗 -12%                          │
+│                                                                 │
+│  升级消耗：260 星尘                                              │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 升级进度：                                               │   │
+│  │ ████████░░░░░░░░░░░░░░░░░░░░░░ 30%                      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  满级效果预览：                                                  │
+│  Lv.10: 合卡消耗 -30%                                            │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [升级] [取消]                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 升级数据表
+
+| 等级 | 效果 | 合卡消耗系数 | 消耗类型 | 消耗数量 |
+|:---:|:---|:---:|:---|:---:|
+| 0 | 无 | 1.00 | - | - |
+| 1 | 合卡消耗 -3% | 0.97 | 星尘 | 80 |
+| 2 | 合卡消耗 -3% | 0.94 | 星尘 | 120 |
+| 3 | 合卡消耗 -3% | 0.91 | 星尘 | 180 |
+| 4 | 合卡消耗 -3% | 0.88 | 星尘 | 260 |
+| 5 | 合卡消耗 -3% | 0.85 | 星尘 | 360 |
+| 6 | 合卡消耗 -3% | 0.82 | 星核 | 5 |
+| 7 | 合卡消耗 -3% | 0.79 | 星核 | 8 |
+| 8 | 合卡消耗 -3% | 0.76 | 星核 | 12 |
+| 9 | 合卡消耗 -3% | 0.73 | 星核 | 18 |
+| 10 | 合卡消耗 -3% | 0.70 | 星核 | 28 |
+
+**总消耗**：1,000 星尘 + 71 星核
+
+#### 升级逻辑代码
+
+```gdscript
+# BuildingManager.gd
+func upgrade_forge_workshop() -> bool:
+    var current_level = buildings["forge_workshop"]
+    if current_level >= 10:
+        return false  # 已满级
+    
+    var cost = get_forge_upgrade_cost(current_level)
+    
+    if cost.type == "stardust":
+        if player_data.stardust < cost.amount:
+            return false  # 资源不足
+        player_data.stardust -= cost.amount
+    else:
+        if player_data.star_core < cost.amount:
+            return false
+        player_data.star_core -= cost.amount
+    
+    buildings["forge_workshop"] += 1
+    
+    # 更新系数
+    K_craft = 1.0 - (buildings["forge_workshop"] * 0.03)
+    K_craft = max(0.7, K_craft)
+    
+    # 保存并通知
+    SaveManager.save_building_data(buildings)
+    GameEvents.player_resources_changed.emit(
+        player_data.stardust, 
+        player_data.star_core, 
+        player_data.gold
+    )
+    
+    return true
+```
+
+---
+
+### 2.2 药剂师协会（Alchemist Guild）
+
+**功能**：提升角色的生命值上限，每级 10%
+
+#### 互动流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  药剂师协会界面                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  当前等级：Lv.5 → Lv.6                                          │
+│  当前效果：生命上限 +50% → 生命上限 +60%                         │
+│  当前 HP：150/150 → 160/160 (升级后自动回满)                     │
+│                                                                 │
+│  升级消耗：10 星核                                               │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 升级进度：                                               │   │
+│  │ ████████████████░░░░░░░░░░░░ 50%                       │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  满级效果预览：                                                  │
+│  Lv.10: 生命上限 +100% (基础 100 → 200)                          │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [升级] [取消]                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 升级数据表
+
+| 等级 | 生命上限系数 | 累计效果 | 消耗类型 | 消耗数量 |
+|:---:|:---:|:---:|:---|:---:|
+| 0 | 1.0 | 0% | - | - |
+| 1 | 1.1 | +10% | 星尘 | 100 |
+| 2 | 1.2 | +20% | 星尘 | 150 |
+| 3 | 1.3 | +30% | 星尘 | 220 |
+| 4 | 1.4 | +40% | 星尘 | 320 |
+| 5 | 1.5 | +50% | 星尘 | 460 |
+| 6 | 1.6 | +60% | 星核 | 10 |
+| 7 | 1.7 | +70% | 星核 | 15 |
+| 8 | 1.8 | +80% | 星核 | 22 |
+| 9 | 1.9 | +90% | 星核 | 32 |
+| 10 | 2.0 | +100% | 星核 | 48 |
+
+**总消耗**：1,250 星尘 + 85 星核
+
+#### 升级逻辑代码
+
+```gdscript
+func upgrade_alchemist_guild() -> bool:
+    var current_level = buildings["alchemist_guild"]
+    if current_level >= 10:
+        return false
+    
+    var cost = get_alchemist_upgrade_cost(current_level)
+    
+    if cost.type == "stardust":
+        if player_data.stardust < cost.amount:
+            return false
+        player_data.stardust -= cost.amount
+    else:
+        if player_data.star_core < cost.amount:
+            return false
+        player_data.star_core -= cost.amount
+    
+    buildings["alchemist_guild"] += 1
+    
+    # 更新系数
+    K_hp = 1.0 + (buildings["alchemist_guild"] * 0.1)
+    
+    # 更新当前 HP（升级后回满）
+    player_data.character_data.current_hp = player_data.character_data.max_hp
+    
+    SaveManager.save_building_data(buildings)
+    GameEvents.player_hp_changed.emit(
+        player_data.character_data.current_hp,
+        player_data.character_data.max_hp
+    )
+    
+    return true
+```
+
+---
+
+### 2.3 战争学院（War Academy）
+
+**功能**：减少卡组要求的最少卡牌数量，每级 1 张，初始下限为 20 张
+
+#### 互动流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    战争学院界面                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  当前等级：Lv.3 → Lv.4                                          │
+│  当前效果：卡组最少 17 张 → 卡组最少 16 张                         │
+│                                                                 │
+│  升级消耗：270 星尘                                              │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 升级进度：                                               │   │
+│  │ ███████░░░░░░░░░░░░░░░░░░░░░░░ 30%                      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  满级效果预览：                                                  │
+│  Lv.10: 卡组最少 10 张                                            │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [升级] [取消]                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 升级数据表
+
+| 等级 | 卡组下限 | 累计效果 | 消耗类型 | 消耗数量 |
+|:---:|:---:|:---:|:---|:---:|
+| 0 | 20 | 0 张 | - | - |
+| 1 | 19 | -1 张 | 星尘 | 120 |
+| 2 | 18 | -2 张 | 星尘 | 180 |
+| 3 | 17 | -3 张 | 星尘 | 270 |
+| 4 | 16 | -4 张 | 星尘 | 400 |
+| 5 | 15 | -5 张 | 星尘 | 580 |
+| 6 | 14 | -6 张 | 星核 | 8 |
+| 7 | 13 | -7 张 | 星核 | 12 |
+| 8 | 12 | -8 张 | 星核 | 18 |
+| 9 | 11 | -9 张 | 星核 | 28 |
+| 10 | 10 | -10 张 | 星核 | 42 |
+
+**总消耗**：1,550 星尘 + 108 星核
+
+#### 升级逻辑代码
+
+```gdscript
+func upgrade_war_academy() -> bool:
+    var current_level = buildings["war_academy"]
+    if current_level >= 10:
+        return false
+    
+    var cost = get_war_academy_upgrade_cost(current_level)
+    
+    if cost.type == "stardust":
+        if player_data.stardust < cost.amount:
+            return false
+        player_data.stardust -= cost.amount
+    else:
+        if player_data.star_core < cost.amount:
+            return false
+        player_data.star_core -= cost.amount
+    
+    buildings["war_academy"] += 1
+    
+    # 更新卡组下限
+    K_deck_min = max(10, 20 - buildings["war_academy"])
+    
+    SaveManager.save_building_data(buildings)
+    GameEvents.player_resources_changed.emit(
+        player_data.stardust,
+        player_data.star_core,
+        player_data.gold
+    )
+    
+    return true
+```
+
+---
+
+### 2.4 募兵所（Recruitment Office）
+
+**功能**：增加卡组要求的最大卡牌数量，初始上限为 30 张
+
+#### 互动流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      募兵所界面                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  当前等级：Lv.4 → Lv.5                                          │
+│  当前效果：卡组最大 34 张 → 卡组最大 35 张                         │
+│                                                                 │
+│  升级消耗：320 星尘                                              │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 升级进度：                                               │   │
+│  │ ████████░░░░░░░░░░░░░░░░░░░░░░ 40%                      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  满级效果预览：                                                  │
+│  Lv.10: 卡组最大 40 张                                            │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [升级] [取消]                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 升级数据表
+
+| 等级 | 卡组上限 | 累计效果 | 消耗类型 | 消耗数量 |
+|:---:|:---:|:---:|:---|:---:|
+| 0 | 30 | 0 张 | - | - |
+| 1 | 31 | +1 张 | 星尘 | 100 |
+| 2 | 32 | +2 张 | 星尘 | 150 |
+| 3 | 33 | +3 张 | 星尘 | 220 |
+| 4 | 34 | +4 张 | 星尘 | 320 |
+| 5 | 35 | +5 张 | 星尘 | 460 |
+| 6 | 36 | +6 张 | 星核 | 6 |
+| 7 | 37 | +7 张 | 星核 | 10 |
+| 8 | 38 | +8 张 | 星核 | 15 |
+| 9 | 39 | +9 张 | 星核 | 22 |
+| 10 | 40 | +10 张 | 星核 | 32 |
+
+**总消耗**：1,250 星尘 + 85 星核
+
+---
+
+### 2.5 精炼工厂（Refinery Plant）
+
+**功能**：提升远征结束时资源的获取量，独立乘区，每级 3%
+
+#### 互动流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    精炼工厂界面                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  当前等级：Lv.2 → Lv.3                                          │
+│  当前效果：资源获取 +6% → 资源获取 +9%                           │
+│                                                                 │
+│  升级消耗：400 星尘                                              │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 升级进度：                                               │   │
+│  │ ██████░░░░░░░░░░░░░░░░░░░░░░░░ 20%                      │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  满级效果预览：                                                  │
+│  Lv.10: 资源获取 +30%                                            │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [升级] [取消]                                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 升级数据表
+
+| 等级 | 资源精炼系数 | 累计效果 | 消耗类型 | 消耗数量 |
+|:---:|:---:|:---:|:---|:---:|
+| 0 | 1.00 | 0% | - | - |
+| 1 | 1.03 | +3% | 星尘 | 120 |
+| 2 | 1.06 | +6% | 星尘 | 240 |
+| 3 | 1.09 | +9% | 星尘 | 400 |
+| 4 | 1.12 | +12% | 星尘 | 600 |
+| 5 | 1.15 | +15% | 星尘 | 850 |
+| 6 | 1.18 | +18% | 星核 | 6 |
+| 7 | 1.21 | +21% | 星核 | 12 |
+| 8 | 1.24 | +24% | 星核 | 20 |
+| 9 | 1.27 | +27% | 星核 | 32 |
+| 10 | 1.30 | +30% | 星核 | 48 |
+
+**总消耗**：2,210 星尘 + 118 星核
+
+---
+
+## 三、建筑升级消耗汇总
+
+| 建筑 | 1-5 级星尘 | 6-10 级星核 | 总计 |
+|:---|:---:|:---:|:---:|
+| 锻造工坊 | 1,000 | 71 | 1,071 |
+| 药剂师协会 | 1,250 | 85 | 1,335 |
+| 战争学院 | 1,550 | 108 | 1,658 |
+| 募兵所 | 1,250 | 85 | 1,335 |
+| 精炼工厂 | 2,210 | 118 | 2,328 |
+| **总计** | **7,260** | **467** | **7,727** |
+
+---
+
+## 四、资源系统互动
+
+### 4.1 资源获取途径
+
+| 资源 | 主要来源 | 次要来源 |
+|:---|:---|:---|
+| 星尘 | 击败普通敌人 | 远征完成奖励、成就奖励 |
+| 星核 | 击败精英/Boss | 远征完成奖励、高难度通关 |
+| 金币 | 事件节点 | 成就奖励、出售卡牌 |
+
+### 4.2 资源消耗途径
+
+| 资源 | 消耗途径 |
+|:---|:---|
+| 星尘 | 建筑 1-5 级升级、低级卡牌合成、消耗品制造 |
+| 星核 | 建筑 6-10 级升级、高级卡牌合成、角色解锁 |
+| 金币 | 事件交易、特殊购买 |
+
+### 4.3 资源更新信号
+
+```gdscript
+# 当资源变化时触发
+func update_resources():
+    GameEvents.player_resources_changed.emit(
+        player_data.stardust,
+        player_data.star_core,
+        player_data.gold
+    )
+    
+    # 更新 UI 显示
+    resource_bar.update_display(
+        player_data.stardust,
+        player_data.star_core,
+        player_data.gold
+    )
+```
+
+---
+
+## 五、存档触发点
+
+### 5.1 自动存档时机
+
+| 时机 | 触发条件 | 保存内容 |
+|:---|:---|:---|
+| 建筑升级后 | 升级动画完成 | 建筑等级、资源变化 |
+| 角色解锁后 | 解锁确认 | 已解锁角色列表 |
+| 开始远征前 | 确认选择 | 远征配置、卡组状态 |
+| 返回基地时 | 远征结束 | 远征进度、奖励发放 |
+
+### 5.2 手动存档
+
+```gdscript
+# 玩家可随时手动保存
+func manual_save():
+    var save_data = {
+        "version": GAME_VERSION,
+        "timestamp": Time.get_unix_time_from_system(),
+        "player": player_data.to_dict(),
+        "buildings": buildings,
+        "settings": game_settings
+    }
+    
+    SaveManager.save_game(save_data)
+    show_save_confirmation()
+```
+
+---
+
+# 第三部分：远征地图场景（Map Scene）
+
+## 一、地图加载与节点生成
+
+### 1.1 地图配置加载
+
+```gdscript
+# MapManager.gd
+func load_map(map_id: String, difficulty: String):
+    # 加载地图配置
+    var map_config = load("res://resources/maps/%s.tres" % map_id)
+    
+    # 创建远征数据
+    expedition_data = ExpeditionData.new()
+    expedition_data.map_id = map_id
+    expedition_data.difficulty = difficulty
+    expedition_data.map_config = map_config
+    
+    # 生成节点
+    _generate_nodes(map_config)
+    _connect_paths(map_config)
+    _bind_environments(map_config)
+    
+    # 设置起点
+    expedition_data.current_node_id = nodes[0].id
+    
+    # 通知 UI
+    GameEvents.scene_loaded.emit("expedition")
+```
+
+### 1.2 节点生成规则
+
+```gdscript
+func _generate_nodes(map_config: MapConfig):
+    nodes.clear()
+    
+    var node_count = map_config.node_count  # 通常 10-15 个节点
+    
+    for i in range(node_count):
+        var node = MapNode.new()
+        node.id = "node_%d" % i
+        node.index = i
+        
+        # 确定节点类型
+        if i == 0:
+            node.type = NodeType.START  # 起点
+        elif i == node_count - 1:
+            node.type = NodeType.BOSS   # BOSS
+        else:
+            node.type = _get_random_node_type(i, map_config)
+        
+        # 绑定环境
+        node.environment = _get_environment_for_node(i, map_config)
+        
+        # 配置敌人/奖励
+        _configure_node_content(node, i, map_config)
+        
+        nodes.append(node)
+```
+
+### 1.3 节点类型分布
+
+| 节点类型 | 占比 | 说明 |
+|:---|:---:|:---|
+| 起点 | 固定 | 第 1 个节点，安全 |
+| 战斗 | 50-60% | 普通敌人 |
+| 营地 | 10-15% | 安全屋，恢复 |
+| 奖励 | 10-15% | 三选一奖励 |
+| 事件 | 10-15% | 随机事件 |
+| 精英 | 5-10% | 精英敌人 |
+| BOSS | 固定 | 最后节点 |
+
+---
+
+## 二、六种节点类型详解
+
+### 2.1 战斗节点（⚔️）
+
+**内容**：普通敌人战斗
+
+**互动流程**：
+1. 点击战斗节点
+2. 显示节点信息（敌人预览、环境）
+3. 确认进入战斗
+4. 切换到战斗场景
+5. 战斗胜利 → 获得资源 → 返回地图
+6. 战斗失败 → 扣除生命 → 检查游戏结束
+
+**奖励计算**：
+```gdscript
+func calculate_battle_rewards(enemy_tier: int, difficulty: String) -> Dictionary:
+    var base_stardust = 25 * enemy_tier
+    var base_star_core = 0
+    
+    if enemy_tier >= 5:  # 精英有星核
+        base_star_core = 8
+    
+    # 应用系数
+    var K_diff = get_difficulty_resource_multiplier(difficulty)
+    var K_map = get_map_resource_multiplier(expedition_data.map_id)
+    var K_refine = get_refine_multiplier()
+    
+    return {
+        "stardust": floor(base_stardust * K_diff * K_map * K_refine),
+        "star_core": floor(base_star_core * K_diff * K_map * K_refine)
+    }
+```
+
+---
+
+### 2.2 营地节点（🏕️）
+
+**内容**：安全屋，可休整
+
+**互动选项**：
+| 选项 | 效果 | 限制 |
+|:---|:---|:---|
+| 休息 | 恢复 30 点生命 | 每节点限 1 次 |
+| 调整卡组 | 进入卡组编辑 | 无限制 |
+| 制造消耗品 | 打开制造界面 | 需要资源 |
+| 离开 | 继续远征 | - |
+
+**互动流程**：
+```
+进入营地节点
+    ↓
+显示营地菜单
+    ↓
+玩家选择操作
+    ↓
+执行操作（休息/调整/制造）
+    ↓
+确认离开
+    ↓
+返回地图
+```
+
+---
+
+### 2.3 奖励节点（🎁）
+
+**内容**：三选一奖励
+
+**奖励池**：
+| 奖励类型 | 内容 | 概率 |
+|:---|:---|:---|
+| 卡牌 | 随机卡牌（2 普通 +1 稀有） | 40% |
+| 增益 | 永久属性提升 | 30% |
+| 资源 | 星尘/星核/金币 | 20% |
+| 消耗品 | 随机消耗品 | 10% |
+
+**互动流程**：
+```
+进入奖励节点
+    ↓
+从奖励池抽取 3 个选项
+    ↓
+显示三选一界面
+    ↓
+玩家选择 1 个奖励
+    ↓
+获得奖励，其余消失
+    ↓
+返回地图
+```
+
+**代码实现**：
+```gdscript
+func generate_reward_options() -> Array[Reward]:
+    var options = []
+    
+    for i in range(3):
+        var reward_type = _get_random_reward_type()
+        var reward = _create_reward(reward_type)
+        options.append(reward)
+    
+    return options
+
+func select_reward(reward: Reward):
+    _apply_reward(reward)
+    
+    # 通知成就
+    AchievementManager.check_achievements("reward_select", {
+        "reward_type": reward.type
+    })
+    
+    # 返回地图
+    return_to_map()
+```
+
+---
+
+### 2.4 事件节点（❓）
+
+**内容**：随机事件
+
+**事件分类**：
+| 分类 | 占比 | 说明 |
+|:---|:---:|:---|
+| 奖励事件 | 40% | 正面效果 |
+| 中性事件 | 30% | 有得有失 |
+| 负面事件 | 30% | 负面效果 |
+
+**事件示例**：
+
+```
+【奖励事件】古代宝藏
+发现一个古代宝箱！
+选项：
+A. 打开宝箱 → 获得 100 星尘 (80%) 或 陷阱损失 20HP(20%)
+B. 离开 → 无效果
+
+【中性事件】神秘商人
+遇到一个神秘商人
+选项：
+A. 用 50HP 交换 100 星尘
+B. 用 100 星尘交换 50HP
+C. 离开
+
+【负面事件】伏击
+遭到敌人伏击！
+选项：
+A. 战斗 → 进入强制战斗
+B. 逃跑 → 损失 30 星尘
+```
+
+**事件触发逻辑**：
+```gdscript
+func trigger_event_node():
+    var event_pool = _get_event_pool_for_difficulty()
+    var event = event_pool.pick_random()
+    
+    show_event_popup(event)
+    
+    # 等待玩家选择
+    await event_popup.choice_selected
+    
+    _resolve_event_choice(event, selected_choice)
+```
+
+---
+
+### 2.5 精英节点（👹）
+
+**内容**：精英敌人战斗
+
+**特点**：
+- 敌人强度更高（HP×1.5，攻击×1.2）
+- 奖励更丰厚（星尘×2，星核掉落）
+- 有专属掉落
+
+**互动流程**：
+```
+进入精英节点
+    ↓
+显示精英敌人信息
+    ↓
+确认挑战
+    ↓
+切换到战斗场景
+    ↓
+战斗胜利
+    ↓
+获得精英奖励 + 专属掉落
+    ↓
+返回地图
+```
+
+**专属掉落表**：
+| 物品 | 概率 | 数量 |
+|:---|:---:|:---:|
+| 星核 | 100% | 8-12 |
+| 稀有卡牌 | 50% | 1 |
+| 消耗品 | 30% | 1-2 |
+| 增益道具 | 10% | 1 |
+
+---
+
+### 2.6 BOSS 节点（👑）
+
+**内容**：区域 BOSS 战斗
+
+**特点**：
+- 多阶段战斗
+- 专属机制
+- 通关远征
+
+**互动流程**：
+```
+进入 BOSS 节点
+    ↓
+播放 BOSS 入场动画
+    ↓
+BOSS 战开始
+    ↓
+阶段转换（HP 70%/30%）
+    ↓
+战斗胜利
+    ↓
+播放通关动画
+    ↓
+远征完成结算
+```
+
+**BOSS 阶段机制**：
+```gdscript
+# BossAI.gd
+func update_phase():
+    var hp_percent = current_hp / max_hp
+    
+    if hp_percent <= 0.3 and phase < 3:
+        phase = 3
+        _enter_phase_three()
+    elif hp_percent <= 0.7 and phase < 2:
+        phase = 2
+        _enter_phase_two()
+    
+    # 更新行为树
+    behavior_tree.set_phase(phase)
+```
+
+---
+
+## 三、路径选择与移动规则
+
+### 3.1 路径连接规则
+
+```
+典型地图布局：
+
+起点 → 战斗 → 战斗 → 营地 → 战斗 → 精英 → 奖励 → 战斗 → 精英 → BOSS
+         ↓         ↓              ↓                    ↓
+        战斗      事件           战斗                  事件
+
+规则：
+1. 每个节点通常连接 1-3 个后续节点
+2. 玩家只能移动到相邻节点
+3. 不能回头移动
+```
+
+### 3.2 移动逻辑
+
+```gdscript
+func move_to_node(target_node_id: String) -> bool:
+    var current_node = get_node(expedition_data.current_node_id)
+    var target_node = get_node(target_node_id)
+    
+    # 检查是否是相邻节点
+    if not current_node.connected_nodes.has(target_node_id):
+        show_error("无法移动到该节点")
+        return false
+    
+    # 更新位置
+    expedition_data.current_node_id = target_node_id
+    expedition_data.visited_nodes.append(target_node_id)
+    
+    # 更新进度
+    expedition_data.map_progress = calculate_progress()
+    
+    # 触发节点事件
+    _trigger_node_event(target_node)
+    
+    return true
+```
+
+---
+
+## 四、环境绑定与切换
+
+### 4.1 环境绑定规则
+
+| 地图 | 主要环境 | 次要环境 | 极端环境概率 |
+|:---|:---|:---|:---:|
+| 边境荒野 | 晴朗 (70%) | 雨天 (30%) | 0% |
+| 迷雾森林 | 雨天 (50%) | 毒雾 (30%) | 20% |
+| 深山遗迹 | 晴朗 (60%) | 高重力 (30%) | 10% |
+| 古代遗迹 | 时空紊乱 (50%) | 晴朗 (30%) | 20% |
+| 深渊地下城 | 黑暗 (70%) | 虚空 (30%) | 10% |
+| 天空城 | 晴朗 (50%) | 雷暴 (40%) | 10% |
+
+### 4.2 环境切换
+
+```gdscript
+# EnvironmentManager.gd
+func bind_environment_to_node(node_id: String):
+    var node = get_node(node_id)
+    var env_id = node.environment
+    
+    # 加载环境配置
+    var env_config = load("res://resources/environments/%s.tres" % env_id)
+    current_environment = env_config
+    
+    # 应用视觉效果
+    _apply_visual_effects(env_config)
+    
+    # 应用数值修正
+    _apply_damage_modifiers(env_config)
+    
+    # 通知 UI
+    GameEvents.environment_changed.emit(env_id)
+```
+
+---
+
+## 五、远征进度追踪
+
+### 5.1 进度计算
+
+```gdscript
+func calculate_progress() -> float:
+    var total_nodes = nodes.size()
+    var visited_count = expedition_data.visited_nodes.size()
+    
+    return (visited_count / total_nodes) * 100
+```
+
+### 5.2 进度显示
+
+```
+远征进度条：
+
+████████████░░░░░░░░░░ 40% (4/10 节点)
+
+当前节点：战斗节点
+下一节点：营地 / 战斗
+剩余节点：6
+```
+
+---
+
+# 第四部分：战斗场景（Battle Scene）
+
+## 一、战斗初始化流程
+
+### 1.1 战斗入场
+
+```gdscript
+# BattleManager.gd
+func start_battle(enemies: Array[EnemyData], environment: EnvironmentData):
+    battle_state = BattleState.WAITING
+    
+    # 初始化敌人
+    _spawn_enemies(enemies)
+    
+    # 设置环境
+    EnvironmentManager.set_environment(environment)
+    
+    # 初始化战斗数据
+    turn_number = 0
+    player_energy = max_energy
+    
+    # 构建卡组
+    _build_battle_deck()
+    
+    # 抽初始手牌
+    player_hand.draw_cards(5)
+    
+    # 播放入场动画
+    await _play_entry_animation()
+    
+    # 开始战斗
+    battle_state = BattleState.PLAYER_TURN
+    GameEvents.battle_started.emit(enemies, environment)
+    
+    # 开始玩家回合
+    start_player_turn()
+```
+
+### 1.2 场景节点结构
+
+```
+BattleScene (Node2D)
+├── EnvironmentLayer (Node2D)       # 环境效果层
+│   ├── WorldEnvironment
+│   └── ParticleEffects
+├── EnemyContainer (Node2D)         # 敌人容器
+│   └── Enemy[] (动态生成)
+├── PlayerContainer (Node2D)        # 玩家容器
+│   └── CharacterSprite
+├── UILayer (Control)               # UI 层
+│   ├── TopBar (HBoxContainer)      # 顶部信息栏
+│   │   ├── TurnLabel
+│   │   ├── EnvironmentLabel
+│   │   └── EnemyIntentLabel
+│   ├── EnemyIntentPanel (Panel)    # 敌人意图显示
+│   ├── PlayerStatusBar (HBoxContainer)
+│   │   ├── HPBar
+│   │   ├── BlockLabel
+│   │   └── EnergyLabel
+│   ├── HandContainer (HBoxContainer) # 手牌容器
+│   └── ActionButtons (HBoxContainer)
+│       └── EndTurnButton
+├── EffectLayer (Node2D)            # 特效层
+│   └── DamageNumbers (动态生成)
+└── BattleManager (Node)            # 战斗逻辑
+```
+
+---
+
+## 二、回合制循环详解
+
+### 2.1 完整回合流程
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        回合制循环                                │
+└─────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────┐
+    │ 玩家回合开始                                         │
+    │ 1. 回合数 +1                                        │
+    │ 2. 重置能量到最大值                                  │
+    │ 3. 抽 3 张牌                                         │
+    │ 4. 更新敌人意图显示                                  │
+    │ 5. 通知 UI 更新                                      │
+    └───────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+    ┌─────────────────────────────────────────────────────┐
+    │ 玩家行动阶段                                         │
+    │ - 使用卡牌（消耗能量）                               │
+    │ - 卡牌效果即时结算                                   │
+    │ - 检查胜利条件                                       │
+    └───────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+    ┌─────────────────────────────────────────────────────┐
+    │ 玩家点击「结束回合」                                 │
+    └───────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+    ┌─────────────────────────────────────────────────────┐
+    │ 敌人回合开始                                         │
+    │ 1. 播放敌人回合动画                                  │
+    │ 2. 按顺序执行敌人行动                                │
+    └───────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+    ┌─────────────────────────────────────────────────────┐
+    │ 敌人行动阶段                                         │
+    │ - 攻击：计算伤害，玩家扣血                           │
+    │ - 防御：获得格挡                                     │
+    │ - 技能：施加状态/特殊效果                            │
+    │ - 检查失败条件                                       │
+    └───────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+    ┌─────────────────────────────────────────────────────┐
+    │ 状态效果结算                                         │
+    │ - 燃烧/毒素等持续伤害                                │
+    │ - 回合结束效果                                       │
+    │ - 持续时间减少                                       │
+    └───────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+                  返回玩家回合
+```
+
+### 2.2 玩家回合代码
+
+```gdscript
+func start_player_turn():
+    battle_state = BattleState.PLAYER_TURN
+    turn_number += 1
+    
+    # 重置能量
+    player_energy = max_energy
+    GameEvents.player_energy_changed.emit(player_energy, max_energy)
+    
+    # 重置敌人意图
+    for enemy in enemies:
+        enemy.reset_intent()
+    
+    # 抽牌
+    var draw_count = get_draw_count()  # 基础 3 张，可被修正
+    player_hand.draw_cards(draw_count)
+    
+    # 检查手牌上限
+    player_hand.check_hand_limit()
+    
+    # 更新敌人意图显示
+    _update_enemy_intents()
+    
+    # 通知 UI
+    GameEvents.turn_started.emit(turn_number)
+    
+    # 状态效果结算（回合开始）
+    _resolve_start_of_turn_effects()
+
+func get_draw_count() -> int:
+    var draw = 3  # 基础抽牌
+    
+    # 环境修正
+    if current_environment.id == "high_gravity":
+        draw -= 1
+    
+    # 状态修正
+    if has_effect("draw_up"):
+        draw += get_effect_stacks("draw_up")
+    
+    return max(0, draw)
+```
+
+### 2.3 敌人回合代码
+
+```gdscript
+func start_enemy_turn():
+    battle_state = BattleState.ENEMY_TURN
+    GameEvents.turn_ended.emit(turn_number)
+    
+    # 玩家无法操作
+    disable_player_input()
+    
+    # 敌人依次行动
+    for enemy in enemies:
+        if enemy.is_alive():
+            await execute_enemy_action(enemy)
+            await get_tree().create_timer(0.5).timeout
+    
+    # 状态效果结算（回合结束）
+    await _resolve_end_of_turn_effects()
+    
+    # 检查失败
+    if check_defeat():
+        battle_state = BattleState.DEFEAT
+        GameEvents.battle_lost.emit()
+        return
+    
+    # 检查胜利
+    if check_victory():
+        battle_state = BattleState.VICTORY
+        GameEvents.battle_won.emit()
+        return
+    
+    # 开始下回合
+    start_player_turn()
+
+func execute_enemy_action(enemy: Enemy):
+    var intent = enemy.get_current_intent()
+    
+    match intent.type:
+        "attack":
+            await _execute_enemy_attack(enemy, intent)
+        "defend":
+            await _execute_enemy_defend(enemy, intent)
+        "buff":
+            await _execute_enemy_buff(enemy, intent)
+        "special":
+            await _execute_enemy_special(enemy, intent)
+    
+    GameEvents.enemy_action_taken.emit(enemy.id, intent)
+```
+
+---
+
+## 三、卡牌互动系统
+
+### 3.1 拖拽检测与目标选择
+
+```gdscript
+# CardUI.gd
+var is_dragging = false
+var drag_start_position = Vector2.ZERO
+
+func _gui_input(event):
+    if event is InputEventMouseButton:
+        if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+            is_dragging = true
+            drag_start_position = get_global_mouse_position()
+            
+        elif event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+            if is_dragging:
+                is_dragging = false
+                _on_drop()
+    
+    elif event is InputEventMouseMotion and is_dragging:
+        # 跟随鼠标移动
+        global_position = get_global_mouse_position() - drag_offset
+
+func _on_drop():
+    # 检查是否在有效区域内
+    var target = _get_target_under_card()
+    
+    if target and _can_play_card(target):
+        # 有效目标，使用卡牌
+        BattleManager.play_card(card_data, target)
+    else:
+        # 无效目标，返回原位
+        _return_to_hand()
+```
+
+### 3.2 能量检查与消耗
+
+```gdscript
+# BattleManager.gd
+func play_card(card: Card, target: Node = null) -> bool:
+    if battle_state != BattleState.PLAYER_TURN:
+        show_error("不是你的回合")
+        return false
+    
+    if player_energy < card.current_cost:
+        show_error("能量不足")
+        _play_cannot_play_animation(card)
+        return false
+    
+    # 消耗能量
+    player_energy -= card.current_cost
+    GameEvents.player_energy_changed.emit(player_energy, max_energy)
+    
+    # 设置目标
+    if target:
+        card.target = target
+    
+    # 执行卡牌效果
+    card.execute()
+    
+    # 移动卡牌
+    player_hand.remove_card(card)
+    player_discard.add_card(card)
+    
+    # 通知
+    GameEvents.card_played.emit(card.data)
+    
+    # 检查胜利
+    if check_victory():
+        battle_state = BattleState.VICTORY
+        GameEvents.battle_won.emit()
+    
+    return true
+```
+
+### 3.3 效果结算顺序
+
+```
+卡牌效果结算顺序：
+
+1. 消耗检查 ✓
+2. 能量扣除 ✓
+3. 基础效果执行
+   ├── 攻击卡：计算伤害 → 应用目标
+   ├── 技能卡：执行效果（抽牌/能量/格挡等）
+   └── 状态卡：施加状态效果
+4. 额外效果触发
+   ├── 连携效果
+   ├── 状态触发
+   └── 环境修正
+5. 视觉效果播放
+6. 数字飘字显示
+7. 检查战斗结束
+```
+
+---
+
+## 四、伤害计算完整流程
+
+### 4.1 伤害计算公式
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        伤害计算流程                              │
+└─────────────────────────────────────────────────────────────────┘
+
+卡牌基础伤害 (Base Damage)
+         │
+         ▼
+    + 状态加成 (Status Bonus)
+      例如：强化×5, 机关层数×3
+         │
+         ▼
+    = 基础伤害 (Base Total)
+         │
+         ▼
+    × 环境系数 (K_env)
+      例如：雨天电系 1.5, 高温火系 1.3
+         │
+         ▼
+    = 环境修正伤害 (Environment Modified)
+         │
+         ▼
+    × 暴击修正 (Crit Modifier)
+      (1 + 暴击率 × (暴击倍率 - 1))
+         │
+         ▼
+    = 暴击修正伤害 (Crit Modified)
+         │
+         ▼
+    × 防御修正 (K_def)
+      (1 - 防御力/(防御力 + 100))
+         │
+         ▼
+    = 最终伤害 (Final Damage)
+      最低为 1
+```
+
+### 4.2 伤害计算代码
+
+```gdscript
+# DamageCalculator.gd
+static func calculate_damage(
+    base_damage: int,
+    element: String,
+    attacker: Character,
+    target: Enemy,
+    environment: EnvironmentData
+) -> int:
+    # 1. 状态加成
+    var status_bonus = _calculate_status_bonus(attacker, element)
+    var total = base_damage + status_bonus
+    
+    # 2. 环境修正
+    var env_multiplier = environment.get_damage_multiplier(element)
+    total = int(total * env_multiplier)
+    
+    # 3. 暴击计算
+    var crit_rate = attacker.get_crit_rate()
+    var crit_mult = attacker.get_crit_multiplier()
+    var is_crit = RandomUtil.check_crit(crit_rate)
+    
+    if is_crit:
+        total = int(total * crit_mult)
+        GameEvents.crit_triggered.emit()
+    
+    # 4. 防御修正
+    var def_multiplier = 1.0 - (target.defense / float(target.defense + 100))
+    total = int(total * def_multiplier)
+    
+    # 5. 最低伤害
+    return max(1, total)
+
+static func _calculate_status_bonus(attacker: Character, element: String) -> int:
+    var bonus = 0
+    
+    # 强化状态
+    if attacker.has_effect("strengthen"):
+        bonus += attacker.get_effect_stacks("strengthen") * 5
+    
+    # 流派专属状态
+    match attacker.current_flow:
+        "mechanism":
+            if attacker.has_effect("mechanism"):
+                bonus += attacker.get_effect_stacks("mechanism") * 3
+        "steam":
+            if attacker.has_effect("steam_pressure"):
+                bonus += attacker.get_effect_stacks("steam_pressure") * 2
+    
+    return bonus
+```
+
+---
+
+## 五、状态效果系统
+
+### 5.1 状态效果管理器
+
+```gdscript
+# EffectManager.gd
+class_name EffectManager extends Node
+
+var player_effects: Dictionary = {}  # {effect_id: stacks}
+var enemy_effects: Dictionary = {}
+
+func add_effect(target: String, effect_id: String, stacks: int = 1):
+    var effects_dict = _get_effects_dict(target)
+    
+    if effect_id not in effects_dict:
+        effects_dict[effect_id] = 0
+    
+    effects_dict[effect_id] += stacks
+    
+    # 检查上限
+    var max_stacks = get_effect_max_stacks(effect_id)
+    effects_dict[effect_id] = min(effects_dict[effect_id], max_stacks)
+    
+    # 通知 UI
+    GameEvents.effect_applied.emit(target, effect_id, effects_dict[effect_id])
+
+func remove_effect(target: String, effect_id: String, stacks: int = 1):
+    var effects_dict = _get_effects_dict(target)
+    
+    if effect_id in effects_dict:
+        effects_dict[effect_id] -= stacks
+        if effects_dict[effect_id] <= 0:
+            effects_dict.erase(effect_id)
+        
+        GameEvents.effect_removed.emit(target, effect_id)
+
+func resolve_dot_effects():
+    # 结算持续伤害效果
+    for effect_id in player_effects:
+        var damage = get_dot_damage(effect_id, player_effects[effect_id])
+        if damage > 0:
+            player_data.character.take_damage(damage)
+            show_damage_number("player", damage)
+    
+    for effect_id in enemy_effects:
+        var damage = get_dot_damage(effect_id, enemy_effects[effect_id])
+        if damage > 0:
+            for enemy in enemies:
+                enemy.take_damage(damage)
+                show_damage_number(enemy.id, damage)
+```
+
+### 5.2 负面状态详解
+
+| 状态 | 效果 | 叠加上限 | 每层收益 | 来源 |
+|:---|:---|:---:|:---|:---|
+| 燃烧 | 每回合损失 2 点生命 | 10 | -2/回合 | 火系卡牌 |
+| 寒冷 | 速度 -10%，可转冻结 | 10 | -10% 速度 | 冰系卡牌 |
+| 冻结 | 无法行动，受到伤害 +50% | 3 | — | 寒冷满层 |
+| 毒素 | 每回合损失 1% 最大生命 | 20 | -1%/回合 | 毒系卡牌 |
+| 混乱 | 攻击目标随机 | 15 | — | 特殊卡牌 |
+| 重力 | 受到伤害 +2/层 | 20 | +2 受到伤害 | 重力环境 |
+| 辐射 | 随机负面效果 | 15 | — | 特殊事件 |
+| 撕裂 | 受到伤害 +3/层 | 15 | +3 受到伤害 | 物理攻击 |
+| 时滞 | 每层额外受到 8 点伤害 | 10 | +8 受到伤害 | 时空卡牌 |
+| 导电 | 电系伤害连锁 | 10 | 连锁 +1 目标 | 电系卡牌 |
+| 潮湿 | 电系伤害 +50% | 10 | +50% 电伤 | 雨天/水系 |
+| 罪孽 | 惩戒术专属 | 20 | 可转化伤害 | 惩戒卡牌 |
+
+### 5.3 正面状态详解
+
+| 状态 | 效果 | 叠加上限 | 每层收益 | 来源 |
+|:---|:---|:---:|:---|:---|
+| 格挡 | 吸收伤害 | 99 | — | 防御卡牌 |
+| 强化 | 伤害 +5/层 | 5 | +5 伤害 | 增益卡牌 |
+| 机关 | 机关术专属 | 30 | 可转化伤害 | 机关卡牌 |
+| 蒸汽压力 | 蒸汽术专属 | 15 | 提高伤害 | 蒸汽卡牌 |
+| 连击点 | 体术专属 | 30 | 可转化伤害 | 体术卡牌 |
+| 气劲 | 气功术专属 | 20 | 可转化伤害 | 气功卡牌 |
+| 潜行 | 下次攻击必定暴击 | 5 | — | 隐匿卡牌 |
+| 元素 | 炼金术专属 | 10 | 可融合 | 炼金卡牌 |
+
+---
+
+## 六、环境效果实时修正
+
+### 6.1 环境效果应用
+
+```gdscript
+# EnvironmentManager.gd
+func apply_environment_effects():
+    # 应用全局 Shader 参数
+    _set_global_shader_parameters()
+    
+    # 应用粒子效果
+    _spawn_environment_particles()
+    
+    # 应用数值修正
+    _apply_damage_modifiers()
+    
+    # 应用特殊效果
+    _apply_special_effects()
+
+func _apply_damage_modifiers():
+    # 通知战斗管理器环境系数已更新
+    var env_multipliers = current_environment.get_all_multipliers()
+    BattleManager.set_environment_multipliers(env_multipliers)
+
+func _apply_special_effects():
+    match current_environment.id:
+        "thunder_storm":
+            # 雷暴：每回合自动施加导电
+            for enemy in BattleManager.enemies:
+                EffectManager.add_effect(enemy.id, "conducting", 1)
+        "poison_fog":
+            # 毒雾：每回合获得毒素
+            EffectManager.add_effect("player", "poison", 2)
+```
+
+### 6.2 环境效果优先级
+
+```
+效果应用优先级：
+
+1. 基础数值修正（伤害系数）
+2. 状态效果应用（自动施加）
+3. 视觉效果（Shader、粒子）
+4. 音效效果（环境 BGM、SFX）
+5. 特殊规则（目标随机等）
+```
+
+---
+
+## 七、胜利/失败条件判定
+
+### 7.1 胜利条件
+
+```gdscript
+func check_victory() -> bool:
+    for enemy in enemies:
+        if enemy.is_alive():
+            return false
+    return true
+
+# 胜利处理
+func _on_victory():
+    battle_state = BattleState.VICTORY
+    
+    # 计算奖励
+    var rewards = calculate_rewards()
+    
+    # 检查成就
+    AchievementManager.check_achievements("battle_win", {
+        "enemy_count": enemies.size(),
+        "turn_count": turn_number
+    })
+    
+    # 通知
+    GameEvents.battle_won.emit(rewards)
+    
+    # 播放胜利动画
+    await _play_victory_animation()
+```
+
+### 7.2 失败条件
+
+```gdscript
+func check_defeat() -> bool:
+    return player_data.character_data.current_hp <= 0
+
+# 失败处理
+func _on_defeat():
+    battle_state = BattleState.DEFEAT
+    
+    # 计算惩罚
+    var penalty = {
+        "hp_loss": 10,  # 失败损失生命
+        "resource_loss": 0  # 不损失资源
+    }
+    
+    # 通知
+    GameEvents.battle_lost.emit(penalty)
+    
+    # 播放失败动画
+    await _play_defeat_animation()
+```
+
+---
+
+## 八、战斗结束处理
+
+### 8.1 奖励发放
+
+```gdscript
+func calculate_rewards() -> Dictionary:
+    var base_rewards = {
+        "stardust": 0,
+        "star_core": 0,
+        "cards": [],
+        "consumables": []
+    }
+    
+    # 根据敌人计算基础奖励
+    for enemy in enemies:
+        var enemy_rewards = enemy.get_drop_rewards()
+        base_rewards.stardust += enemy_rewards.stardust
+        base_rewards.star_core += enemy_rewards.star_core
+    
+    # 应用系数
+    var K_diff = get_difficulty_multiplier()
+    var K_map = get_map_multiplier()
+    var K_refine = get_refine_multiplier()
+    
+    base_rewards.stardust = floor(base_rewards.stardust * K_diff * K_map * K_refine)
+    base_rewards.star_core = floor(base_rewards.star_core * K_diff * K_map * K_refine)
+    
+    # 检查机制杀奖励
+    if check_mechanic_kill():
+        base_rewards.bonus = get_mechanic_kill_bonus()
+    
+    return base_rewards
+```
+
+---
+
+# 第五部分：结果界面（Result Scene）
+
+## 一、战斗结算流程
+
+### 1.1 结算界面布局
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      战斗结果界面                                │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │                    战斗胜利！                            │   │
+│  │                    回合数：5                            │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  战斗统计：                                                     │
+│  ├── 使用卡牌：12 张                                            │
+│  ├── 造成伤害：256 点                                           │
+│  ├── 受到伤害：20 点                                            │
+│  ├── 暴击次数：3 次                                             │
+│  └── 机制杀：否                                                 │
+│                                                                 │
+│  获得奖励：                                                     │
+│  ├── ⭐ 星尘 +75                                                │
+│  ├── 💎 星核 +5                                                 │
+│  └── 🎴 卡牌选择 x1                                             │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ 选择一张卡牌：                                           │   │
+│  │ ┌─────────┐ ┌─────────┐ ┌─────────┐                    │   │
+│  │ │火焰卡  │ │格挡卡  │ │抽牌卡  │                    │   │
+│  │ │ (稀有) │ │ (普通) │ │ (稀有) │                    │   │
+│  │ └─────────┘ └─────────┘ └─────────┘                    │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│ [选择卡牌] [继续远征] [返回基地]                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 1.2 结算流程代码
+
+```gdscript
+# ResultManager.gd
+func show_battle_result(battle_result: BattleResult, rewards: Dictionary):
+    result_type = battle_result  # VICTORY or DEFEAT
+    
+    # 设置界面文本
+    title_label.text = "战斗胜利！" if battle_result == BattleResult.VICTORY else "战斗失败"
+    title_label.modulate = Color.GREEN if battle_result == BattleResult.VICTORY else Color.RED
+    
+    # 显示统计
+    stats_panel.show_stats(
+        battle_stats.turns,
+        battle_stats.cards_played,
+        battle_stats.damage_dealt,
+        battle_stats.damage_received
+    )
+    
+    # 显示奖励
+    if battle_result == BattleResult.VICTORY:
+        rewards_panel.show_rewards(rewards)
+        
+        # 生成卡牌选择
+        if rewards.has("card_select_count"):
+            card_select_panel.generate_options(rewards.card_select_count)
+    
+    # 设置按钮
+    _setup_action_buttons(battle_result)
+```
+
+---
+
+## 二、奖励计算与发放
+
+### 2.1 奖励计算公式
+
+```gdscript
+func calculate_battle_rewards() -> Dictionary:
+    var base_stardust = 25  # 基础星尘
+    var base_star_core = 0
+    
+    # 根据敌人品级调整
+    for enemy in defeated_enemies:
+        base_stardust += 25 * enemy.tier
+        if enemy.tier >= 5:  # 精英
+            base_star_core += 8
+    
+    # 应用系数
+    var K_diff = DifficultyManager.get_resource_multiplier(current_difficulty)
+    var K_map = MapManager.get_resource_multiplier(current_map)
+    var K_refine = BuildingManager.get_refine_multiplier()
+    
+    var final_stardust = floor(base_stardust * K_diff * K_map * K_refine)
+    var final_star_core = floor(base_star_core * K_diff * K_map * K_refine)
+    
+    return {
+        "stardust": final_stardust,
+        "star_core": final_star_core,
+        "card_select_count": 1 if battle_won else 0
+    }
+```
+
+### 2.2 奖励发放
+
+```gdscript
+func distribute_rewards(rewards: Dictionary):
+    # 添加资源
+    player_data.stardust += rewards.stardust
+    player_data.star_core += rewards.star_core
+    
+    # 通知 UI 更新
+    GameEvents.player_resources_changed.emit(
+        player_data.stardust,
+        player_data.star_core,
+        player_data.gold
+    )
+    
+    # 保存
+    SaveManager.save_player_data(player_data)
+```
+
+---
+
+## 三、卡牌选择机制
+
+### 3.1 卡牌选项生成
+
+```gdscript
+func generate_card_options(count: int) -> Array[Card]:
+    var options = []
+    var card_pool = _get_available_card_pool()
+    
+    for i in range(count):
+        # 权重抽取（稀有度权重）
+        var card = _weighted_random_card(card_pool)
+        options.append(card)
+    
+    # 确保选项多样性
+    options = _ensure_diversity(options)
+    
+    return options
+
+func _weighted_random_card(card_pool: Array) -> Card:
+    var weights = []
+    for card in card_pool:
+        # 稀有度越低权重越高
+        var weight = 10 - card.tier * 1.2
+        weights.append(max(1, weight))
+    
+    return card_pool.pick_random_with_weights(weights)
+```
+
+### 3.2 卡牌选择处理
+
+```gdscript
+func select_card(selected_card: Card):
+    # 添加到临时卡组
+    expedition_data.temp_deck.append(selected_card)
+    
+    # 通知成就
+    AchievementManager.check_achievements("card_select", {
+        "card_id": selected_card.card_id,
+        "card_tier": selected_card.tier
+    })
+    
+    # 关闭选择界面
+    card_select_panel.hide()
+    
+    # 启用继续按钮
+    continue_button.disabled = false
+```
+
+---
+
+## 四、成就触发检查
+
+### 4.1 成就检查时机
+
+| 时机 | 检查内容 |
+|:---|:---|
+| 战斗胜利 | 胜利次数、无伤胜利、速通 |
+| 战斗失败 | 残血翻盘机会 |
+| 获得奖励 | 资源收集、卡牌收集 |
+| 使用卡牌 | 卡牌使用次数、流派使用 |
+| 机制杀 | 特殊击杀方式 |
+
+### 4.2 成就检查代码
+
+```gdscript
+# AchievementManager.gd
+func check_achievements(trigger_type: String, data: Dictionary):
+    for achievement in achievement_resources:
+        if achievement.condition_type != trigger_type:
+            continue
+        
+        if is_achievement_completed(achievement, data):
+            unlock_achievement(achievement.achievement_id)
+        else:
+            update_progress(achievement.achievement_id, data.get("progress", 1))
+
+func is_achievement_completed(achievement: AchievementResource, data: Dictionary) -> bool:
+    var current_progress = progress.get(achievement.achievement_id, 0)
+    return current_progress >= achievement.condition_value
+```
+
+---
+
+# 第六部分：远征结束流程
+
+## 一、远征完成结算
+
+### 1.1 完成条件
+
+| 条件 | 说明 |
+|:---|:---|
+| 击败 BOSS | 远征通关 |
+| 玩家 HP≤0 | 远征失败 |
+| 主动放弃 | 中途退出 |
+
+### 1.2 通关奖励
+
+```gdscript
+func calculate_expedition_clear_rewards() -> Dictionary:
+    var rewards = {
+        "stardust": 0,
+        "star_core": 0,
+        "unlock_progress": 0
+    }
+    
+    # 基础通关奖励
+    rewards.stardust = 150 * get_map_difficulty()
+    rewards.star_core = 25 * get_map_difficulty()
+    
+    # 难度奖励
+    if current_difficulty == "nightmare":
+        rewards.bonus_achievement = "nightmare_conqueror"
+    elif current_difficulty == "doomsday":
+        rewards.bonus_achievement = "doomsday_survivor"
+    
+    # 首次通关奖励
+    if not player_data.stats.maps_cleared.has(current_map):
+        rewards.first_clear_bonus = {
+            "stardust": 500,
+            "star_core": 50
+        }
+        player_data.stats.maps_cleared.append(current_map)
+    
+    return rewards
+```
+
+---
+
+## 二、资源获取公式应用
+
+### 2.1 完整资源计算
+
+```gdscript
+func calculate_total_resources() -> Dictionary:
+    var total_stardust = 0
+    var total_star_core = 0
+    
+    # 战斗奖励累加
+    for battle in expedition_battles:
+        total_stardust += battle.stardust_reward
+        total_star_core += battle.star_core_reward
+    
+    # 应用精炼系数
+    var K_refine = BuildingManager.get_refine_multiplier()
+    total_stardust = floor(total_stardust * K_refine)
+    total_star_core = floor(total_star_core * K_refine)
+    
+    # 通关奖励
+    if expedition_completed:
+        var clear_rewards = calculate_expedition_clear_rewards()
+        total_stardust += clear_rewards.stardust
+        total_star_core += clear_rewards.star_core
+    
+    return {
+        "stardust": total_stardust,
+        "star_core": total_star_core
+    }
+```
+
+---
+
+## 三、解锁条件检查
+
+### 3.1 角色解锁检查
+
+```gdscript
+func check_character_unlocks():
+    var new_unlocks = []
+    
+    for char_id in get_all_characters():
+        if player_data.is_character_unlocked(char_id):
+            continue
+        
+        var condition = get_character_unlock_condition(char_id)
+        
+        if player_data.stats.total_clears >= condition.clear_count:
+            # 满足条件，提示解锁
+            new_unlocks.append(char_id)
+    
+    if new_unlocks.size() > 0:
+        show_unlock_notification(new_unlocks)
+```
+
+### 3.2 难度解锁检查
+
+```gdscript
+func check_difficulty_unlocks():
+    var map_clear_count = player_data.stats.map_clear_counts.get(current_map, 0)
+    
+    if map_clear_count >= 1:
+        # 解锁高难度
+        unlock_difficulty(current_map, "danger")
+        unlock_difficulty(current_map, "nightmare")
+        unlock_difficulty(current_map, "doomsday")
+```
+
+---
+
+## 四、返回基地或继续
+
+### 4.1 返回基地流程
+
+```gdscript
+func return_to_base():
+    # 保存远征进度
+    SaveManager.save_expedition_data(expedition_data)
+    
+    # 发放奖励
+    var total_rewards = calculate_total_resources()
+    player_data.stardust += total_rewards.stardust
+    player_data.star_core += total_rewards.star_core
+    
+    # 更新统计
+    player_data.stats.total_expeditions += 1
+    if expedition_completed:
+        player_data.stats.total_clears += 1
+    
+    # 保存玩家数据
+    SaveManager.save_player_data(player_data)
+    
+    # 切换场景
+    GameManager.change_state(GameState.BASE)
+```
+
+### 4.2 继续远征流程
+
+```gdscript
+func continue_expedition():
+    # 返回地图场景
+    GameManager.change_state(GameState.EXPEDITION)
+    
+    # 恢复远征状态
+    MapScene.restore_expedition(expedition_data)
+```
+
+---
+
+# 第七部分：技术实现参考
+
+## 一、核心类与组件
+
+### 1.1 类图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        核心类图                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+GameManager (单例)
+├── current_state: GameState
+├── player_data: PlayerData
+├── change_state(new_state)
+└── start_expedition(map_id, difficulty)
+
+BattleManager (单例)
+├── battle_state: BattleState
+├── turn_number: int
+├── player_energy: int
+├── enemies: Array[Enemy]
+├── start_battle(enemies, environment)
+├── play_card(card, target)
+├── end_player_turn()
+└── check_victory()/check_defeat()
+
+EnvironmentManager (单例)
+├── current_environment: EnvironmentData
+├── set_environment(env)
+├── get_damage_multiplier(element)
+└── apply_visual_effects()
+
+EffectManager (单例)
+├── player_effects: Dictionary
+├── enemy_effects: Dictionary
+├── add_effect(target, effect_id, stacks)
+├── remove_effect(target, effect_id, stacks)
+└── resolve_dot_effects()
+
+AchievementManager (单例)
+├── achievements: Dictionary
+├── progress: Dictionary
+├── unlock_achievement(achievement_id)
+├── update_progress(achievement_id, amount)
+└── check_achievements(trigger_type, data)
+
+SaveManager (单例)
+├── save_game(data)
+├── load_game(slot)
+├── delete_save(slot)
+└── migrate_save_data(old_data, old_version)
+
+BuildingManager (单例)
+├── buildings: Dictionary  # {building_id: level}
+├── K_craft: float         # 合卡消耗系数
+├── K_hp: float            # 生命上限系数
+├── K_deck_min: int        # 卡组下限
+├── K_deck_max: int        # 卡组上限
+├── K_refine: float        # 资源精炼系数
+├── upgrade_building(building_id)
+└── get_building_level(building_id)
+```
+
+---
+
+## 二、信号连接图
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        信号连接图                                │
+└─────────────────────────────────────────────────────────────────┘
+
+GameManager.game_state_changed
+    ├── UI 层：切换场景显示
+    ├── AudioManager：切换 BGM
+    └── SaveManager：触发存档
+
+BattleManager.turn_started
+    ├── HUD：更新回合数
+    ├── EnemyAI：重置意图
+    └── EffectManager：回合开始效果
+
+BattleManager.card_played
+    ├── HUD：更新手牌/能量
+    ├── EffectManager：触发效果
+    └── AchievementManager：检查成就
+
+BattleManager.battle_won
+    ├── ResultManager：显示结算
+    ├── ResourceManager：发放奖励
+    └── AchievementManager：检查成就
+
+AchievementManager.achievement_unlocked
+    ├── UI 层：显示成就弹窗
+    ├── AudioManager：播放音效
+    └── SaveManager：保存成就
+
+BuildingManager.building_upgraded
+    ├── UI 层：更新建筑显示
+    ├── ResourceManager：更新资源
+    └── SaveManager：保存建筑数据
+```
+
+---
+
+## 三、数据结构定义
+
+### 3.1 完整数据定义
+
+```gdscript
+# 玩家数据
+class_name PlayerData extends RefCounted
+var player_id: String
+var character_id: String
+var character_data: Character
+var stardust: int
+var star_core: int
+var gold: int
+var unlocked_characters: Array[String]
+var unlocked_cards: Dictionary
+var unlocked_flows: Dictionary
+var collected_cards: Array[CardInstance]
+var collected_affixes: Array[String]
+var achievements: Dictionary
+var stats: PlayerStats
+var current_expedition: ExpeditionData
+
+# 远征数据
+class_name ExpeditionData extends RefCounted
+var map_id: String
+var difficulty: String
+var current_node_id: String
+var visited_nodes: Array[String]
+var battle_wins: int
+var battle_losses: int
+var rewards: Dictionary
+var map_progress: float
+var temp_deck: Array[Card]
+
+# 战斗数据
+class_name BattleData extends RefCounted
+var enemies: Array[EnemyData]
+var environment: EnvironmentData
+var player_deck: Array[Card]
+var player_hand: Array[Card]
+var player_discard: Array[Card]
+var turn_number: int
+var battle_result: BattleResult
+
+# 建筑数据
+class_name BuildingData extends RefCounted
+var building_id: String
+var building_name: String
+var current_level: int
+var max_level: int
+var effect_description: String
+var upgrade_costs: Array[UpgradeCost]  # 每级升级消耗
+
+# 成就数据
+class_name AchievementResource extends Resource
+@export var achievement_id: String
+@export var achievement_name: String
+@export var description: String
+@export var category: String
+@export var condition_type: String
+@export var condition_value: int
+@export var reward_type: String
+@export var reward_data: Dictionary
+@export var is_hidden: bool
+@export var icon_path: String
+```
+
+---
+
+## 四、关键函数伪代码
+
+### 4.1 战斗主循环
+
+```gdscript
+# BattleManager.gd
+func battle_loop():
+    while battle_state not in [VICTORY, DEFEAT]:
+        # 玩家回合
+        start_player_turn()
+        
+        # 等待玩家行动
+        while battle_state == PLAYER_TURN:
+            await input_received
+        
+        # 敌人回合
+        start_enemy_turn()
+        
+        # 敌人行动
+        for enemy in enemies:
+            await execute_enemy_action(enemy)
+        
+        # 状态结算
+        await resolve_end_of_turn_effects()
+        
+        # 检查结束条件
+        if check_victory():
+            battle_state = VICTORY
+        elif check_defeat():
+            battle_state = DEFEAT
+    
+    # 战斗结束
+    if battle_state == VICTORY:
+        on_battle_won()
+    else:
+        on_battle_lost()
+```
+
+### 4.2 存档系统
+
+```gdscript
+# SaveManager.gd
+func save_game(slot: int) -> bool:
+    var save_data = {
+        "version": GAME_VERSION,
+        "timestamp": Time.get_unix_time_from_system(),
+        "player": player_data.to_dict(),
+        "buildings": BuildingManager.buildings,
+        "achievements": AchievementManager.achievements,
+        "settings": GameSettings.to_dict()
+    }
+    
+    var file_path = SAVE_PATH + "save_%d.save" % slot
+    var file = FileAccess.open(file_path, FileAccess.WRITE)
+    
+    if file:
+        file.store_var(save_data)
+        file.close()
+        return true
+    
+    return false
+
+func load_game(slot: int) -> Dictionary:
+    var file_path = SAVE_PATH + "save_%d.save" % slot
+    
+    if not FileAccess.file_exists(file_path):
+        return {}
+    
+    var file = FileAccess.open(file_path, FileAccess.READ)
+    var save_data = file.get_var()
+    file.close()
+    
+    # 版本迁移
+    if save_data.get("version", 0) < GAME_VERSION:
+        save_data = migrate_save_data(save_data)
+    
+    return save_data
+```
+
+---
+
+**版本历史**：
+| 版本 | 日期 | 变更内容 |
+|:---|:---|:---|
+| 1.0 | 2026-03-12 | 初始版本，完整场景互动流程文档 |
+| 1.1 | 2026-03-12 | 更新为五大建筑系统（锻造工坊、药剂师协会、战争学院、募兵所、精炼工厂） |
+
+**关联文档**：
+- 游戏设定大全.txt
+- 技术开发文档.txt
+- 环境系统设计.txt
+- 成就系统设计.txt
